@@ -1,0 +1,9 @@
+fastapi>=0.110,<1.0
+uvicorn>=0.27,<1.0
+pillow>=10.0,<12.0
+sentence-transformers>=2.7,<4.0
+Send2Trash>=1.8,<2.0
+httpx>=0.27,<1.0
+numpy>=1.26,<3.0
+# torch is pulled in transitively by sentence-transformers
+pydantic>=2.0,<3.0
