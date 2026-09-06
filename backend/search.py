@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from index_store import IndexStore
-from indexer import TEXT_MODEL_NAME
+from models import get_text_model
 
 
 class SemanticSearch:
@@ -15,34 +15,19 @@ class SemanticSearch:
 
     def __init__(self, store: Optional[IndexStore] = None):
         self.store = store or IndexStore()
-        self._text_model = None
+        self._matrix = None  # type: Optional[np.ndarray]
+        self._meta = None  # type: Optional[List[Dict[str, Any]]]
 
-    def _load_text_model(self):
-        if self._text_model is None:
-            from sentence_transformers import SentenceTransformer
+    def invalidate(self) -> None:
+        self._matrix = None
+        self._meta = None
 
-            print("Loading text embedding model for search...")
-            self._text_model = SentenceTransformer(TEXT_MODEL_NAME)
-        return self._text_model
-
-    def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
-        query = (query or "").strip()
-        if not query:
-            return []
-
-        limit = max(1, min(int(limit or 20), 100))
+    def _ensure_cache(self) -> None:
+        if self._matrix is not None:
+            return
         rows = self.store.all_with_embeddings()
-        if not rows:
-            return []
-
-        model = self._load_text_model()
-        q = np.asarray(model.encode(query), dtype=np.float32)
-        q_norm = np.linalg.norm(q)
-        if q_norm == 0:
-            return []
-        q = q / q_norm
-
-        scored: List[Dict[str, Any]] = []
+        vecs = []
+        meta = []  # type: List[Dict[str, Any]]
         for row in rows:
             blob = row.get("embedding")
             dim = row.get("embedding_dim") or 0
@@ -50,25 +35,21 @@ class SemanticSearch:
                 continue
             vec = np.frombuffer(blob, dtype=np.float32)
             if vec.shape[0] != dim:
-                # Tolerate dim mismatch (e.g. text vs CLIP) by skipping
-                # when dimensions differ from query space
-                if vec.shape[0] != q.shape[0]:
-                    continue
-            v_norm = np.linalg.norm(vec)
-            if v_norm == 0:
                 continue
-            score = float(np.dot(q, vec / v_norm))
+            norm = float(np.linalg.norm(vec))
+            if norm == 0:
+                continue
+            vecs.append(vec / norm)
             snippet = (row.get("text_excerpt") or "")[:240]
             reasons = []
             if snippet:
                 reasons.append("Matched indexed excerpt")
             if row.get("mime"):
-                reasons.append(f"mime={row['mime']}")
-            scored.append(
+                reasons.append("mime=%s" % row["mime"])
+            meta.append(
                 {
                     "path": row["path"],
                     "filename": row["path"].rsplit("/", 1)[-1],
-                    "score": round(score, 4),
                     "snippet": snippet,
                     "reasons": "; ".join(reasons) if reasons else "Embedding similarity",
                     "mime": row.get("mime"),
@@ -76,6 +57,44 @@ class SemanticSearch:
                     "mtime": row.get("mtime"),
                 }
             )
+        if not vecs:
+            self._matrix = np.zeros((0, 0), dtype=np.float32)
+            self._meta = []
+            return
+        self._matrix = np.ascontiguousarray(np.vstack(vecs), dtype=np.float32)
+        self._meta = meta
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
-        return scored[:limit]
+    def search(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        query = (query or "").strip()
+        if not query:
+            return []
+        limit = max(1, min(int(limit or 20), 100))
+        self._ensure_cache()
+        matrix = self._matrix
+        meta = self._meta or []
+        if matrix is None or matrix.size == 0 or not meta:
+            return []
+
+        model = get_text_model()
+        q = np.asarray(model.encode(query), dtype=np.float32)
+        q_norm = float(np.linalg.norm(q))
+        if q_norm == 0:
+            return []
+        q = q / q_norm
+        if q.shape[0] != matrix.shape[1]:
+            return []
+
+        scores = matrix @ q
+        k = min(limit, scores.shape[0])
+        if k == scores.shape[0]:
+            top = np.argsort(-scores)
+        else:
+            part = np.argpartition(-scores, kth=k - 1)[:k]
+            top = part[np.argsort(-scores[part])]
+
+        hits = []
+        for idx in top:
+            item = dict(meta[int(idx)])
+            item["score"] = round(float(scores[int(idx)]), 4)
+            hits.append(item)
+        return hits

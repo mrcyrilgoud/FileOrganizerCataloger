@@ -6,7 +6,7 @@
 
 ## What it does (Phase 1)
 
-1. **Index** a folder — extract bounded text, embed with SentenceTransformers (`all-MiniLM-L6-v2`); images can use CLIP (`clip-ViT-B-32`).
+1. **Index** a folder — extract bounded text, embed with SentenceTransformers (`all-MiniLM-L6-v2`). Images default to a filename label; set `SONIC_ENABLE_CLIP=1` to enrich labels with CLIP (`clip-ViT-B-32`).
 2. **Search** with natural language — cosine similarity over your local index.
 3. **Explain** — Ollama (`qwen3:4b-instruct` on `127.0.0.1`) narrates why a hit might matter, using metadata + a short excerpt only.
 4. Open / trash remain secondary actions (confirm before delete).
@@ -33,7 +33,7 @@ Backend: cd backend, install requirements with the Python that has sentence-tran
 Frontend: cd frontend, install deps, run Vite dev server, open localhost:5173.
 
 ## API Phase 1
-GET /health | POST /index | POST /search | POST /explain | browse/open/delete | legacy /scan
+GET /health | POST /index | POST /search | POST /explain | POST /browse | POST /open | POST /delete
 
 ## Smoke test
 Hit /health, /index a small folder, /search a query, /explain a path when Ollama is up.

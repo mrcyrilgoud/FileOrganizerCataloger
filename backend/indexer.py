@@ -1,4 +1,4 @@
-"""Directory walker + embedder for Sonic Telescope Phase 1."""
+"""Directory walker + batch embedder for Sonic Telescope Phase 1."""
 
 from __future__ import annotations
 
@@ -6,17 +6,14 @@ import mimetypes
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from index_store import IndexStore
+from models import get_text_model, image_file_label
 
-TEXT_MODEL_NAME = "all-MiniLM-L6-v2"
-IMAGE_MODEL_NAME = "clip-ViT-B-32"
-
-# Skip binaries / huge files
-MAX_FILE_BYTES = 25 * 1024 * 1024  # 25 MB hard cap for any file we open
+MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 4000
 MAX_EXCERPT_CHARS = 800
 SKIP_DIR_NAMES = {
@@ -32,7 +29,6 @@ SKIP_DIR_NAMES = {
     "build",
     ".sonic-telescope",
 }
-
 TEXT_EXTENSIONS = {
     ".txt",
     ".md",
@@ -73,49 +69,49 @@ TEXT_EXTENSIONS = {
     ".tex",
     ".log",
 }
-
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
+def _read_text_prefix(path: Path) -> str:
+    with open(str(path), "r", encoding="utf-8", errors="ignore") as handle:
+        return handle.read(MAX_TEXT_CHARS)
+
+
+def _encode_batch(texts: List[str]) -> np.ndarray:
+    model = get_text_model()
+    embs = np.asarray(
+        model.encode(texts, batch_size=32, show_progress_bar=False),
+        dtype=np.float32,
+    )
+    if embs.ndim == 1:
+        embs = embs.reshape(1, -1)
+    return embs
+
+
 class Indexer:
-    """Walk a directory, extract text, embed, upsert into IndexStore."""
+    """Walk a directory, extract text, embed in batches, upsert into IndexStore."""
 
-    def __init__(self, store: Optional[IndexStore] = None):
+    def __init__(
+        self,
+        store: Optional[IndexStore] = None,
+        on_change: Optional[Callable[[], None]] = None,
+    ):
         self.store = store or IndexStore()
-        self._text_model = None
-        self._image_model = None
-
-    def _load_text_model(self):
-        if self._text_model is None:
-            from sentence_transformers import SentenceTransformer
-
-            print("Loading text embedding model...")
-            self._text_model = SentenceTransformer(TEXT_MODEL_NAME)
-        return self._text_model
-
-    def _load_image_model(self):
-        if self._image_model is None:
-            from sentence_transformers import SentenceTransformer
-
-            print("Loading CLIP image model...")
-            self._image_model = SentenceTransformer(IMAGE_MODEL_NAME)
-        return self._image_model
+        self.on_change = on_change
 
     def index_directory(self, directory: str) -> Dict[str, Any]:
         root = Path(directory).expanduser().resolve()
         if not root.is_dir():
-            raise ValueError(f"Not a directory: {directory}")
+            raise ValueError("Not a directory: %s" % directory)
 
-        indexed = 0
         skipped = 0
-        errors: List[str] = []
-        updated = 0
+        errors = []  # type: List[str]
+        pending = []  # type: List[Dict[str, Any]]
+        meta = self.store.meta_map()
 
-        for dirpath, dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(str(root)):
             dirnames[:] = [
-                d
-                for d in dirnames
-                if not d.startswith(".") and d not in SKIP_DIR_NAMES
+                d for d in dirnames if not d.startswith(".") and d not in SKIP_DIR_NAMES
             ]
             for name in filenames:
                 if name.startswith("."):
@@ -123,16 +119,31 @@ class Indexer:
                     continue
                 path = Path(dirpath) / name
                 try:
-                    result = self._index_one(path)
-                    if result == "indexed":
-                        indexed += 1
-                    elif result == "updated":
-                        updated += 1
-                    else:
-                        skipped += 1
-                except Exception as exc:  # noqa: BLE001 — collect and continue
-                    errors.append(f"{path}: {exc}")
+                    item = self._collect_pending(path, meta)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append("%s: %s" % (path, exc))
                     skipped += 1
+                    continue
+                if item is None:
+                    skipped += 1
+                else:
+                    pending.append(item)
+
+        rows, extra_skipped, extra_errors = self._embed_pending(pending)
+        skipped += extra_skipped
+        errors.extend(extra_errors)
+
+        indexed = 0
+        updated = 0
+        if rows:
+            self.store.upsert_many(rows)
+            if self.on_change is not None:
+                self.on_change()
+            for row in rows:
+                if row["path"] in meta:
+                    updated += 1
+                else:
+                    indexed += 1
 
         return {
             "directory": str(root),
@@ -144,107 +155,94 @@ class Indexer:
             "total_in_store": self.store.count(),
         }
 
-    def _index_one(self, path: Path) -> str:
+    def _collect_pending(
+        self, path: Path, meta: Dict[str, Tuple[float, int]]
+    ) -> Optional[Dict[str, Any]]:
         try:
             stat = path.stat()
         except OSError:
-            return "skipped"
-
-        if not path.is_file():
-            return "skipped"
-        if stat.st_size > MAX_FILE_BYTES:
-            return "skipped"
-        if stat.st_size == 0:
-            return "skipped"
-
+            return None
+        if not path.is_file() or stat.st_size == 0 or stat.st_size > MAX_FILE_BYTES:
+            return None
         abs_path = str(path.resolve())
-        existing = self.store.get(abs_path)
-        if existing and abs(existing["mtime"] - stat.st_mtime) < 0.001:
-            return "skipped"  # unchanged
-
+        existing = meta.get(abs_path)
+        if existing is not None:
+            mtime, size = existing
+            if abs(mtime - stat.st_mtime) < 0.001 and size == stat.st_size:
+                return None
         mime, _ = mimetypes.guess_type(abs_path)
         mime = mime or "application/octet-stream"
         ext = path.suffix.lower()
-
-        excerpt = ""
-        embedding: Optional[np.ndarray] = None
-
-        if ext in TEXT_EXTENSIONS or (mime.startswith("text/")):
-            excerpt, embedding = self._embed_text_file(path)
+        if ext in TEXT_EXTENSIONS or mime.startswith("text/"):
+            kind = "text"
         elif ext in IMAGE_EXTENSIONS or mime.startswith("image/"):
-            excerpt, embedding = self._embed_image_file(path, abs_path)
+            kind = "image"
         else:
-            # Filename-only fallback for unknown types (cheap)
-            label = f"File named {path.name}"
-            excerpt = label
-            model = self._load_text_model()
-            embedding = np.asarray(model.encode(label), dtype=np.float32)
+            kind = "other"
+        return {
+            "path": abs_path,
+            "src": path,
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+            "mime": mime,
+            "kind": kind,
+        }
 
-        if embedding is None:
-            return "skipped"
+    def _embed_pending(
+        self, pending: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], int, List[str]]:
+        if not pending:
+            return [], 0, []
+        skipped = 0
+        errors = []  # type: List[str]
+        text_items = []  # type: List[Tuple[Dict[str, Any], str]]
+        label_items = []  # type: List[Tuple[Dict[str, Any], str]]
 
-        blob = embedding.astype(np.float32).tobytes()
-        self.store.upsert(
-            path=abs_path,
-            mtime=stat.st_mtime,
-            size=stat.st_size,
-            mime=mime,
-            text_excerpt=excerpt[:MAX_EXCERPT_CHARS],
-            embedding=blob,
-            embedding_dim=int(embedding.shape[0]),
-            last_indexed=time.time(),
-        )
-        return "updated" if existing else "indexed"
+        for item in pending:
+            kind = item["kind"]
+            try:
+                if kind == "text":
+                    text = _read_text_prefix(item["src"])
+                    if not text.strip():
+                        skipped += 1
+                        continue
+                    text_items.append((item, text))
+                elif kind == "image":
+                    label_items.append((item, image_file_label(item["src"])))
+                else:
+                    label_items.append((item, "File named %s" % item["src"].name))
+            except Exception as exc:  # noqa: BLE001
+                errors.append("%s: %s" % (item["path"], exc))
+                skipped += 1
 
-    def _embed_text_file(self, path: Path) -> Tuple[str, Optional[np.ndarray]]:
-        try:
-            raw = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return "", None
-        text = raw[:MAX_TEXT_CHARS]
-        if not text.strip():
-            return "", None
-        excerpt = text[:MAX_EXCERPT_CHARS]
-        model = self._load_text_model()
-        emb = np.asarray(model.encode(text), dtype=np.float32)
-        return excerpt, emb
+        now = time.time()
+        rows = []
+        rows.extend(self._rows_from_batch(text_items, now, excerpt_from_text=True))
+        rows.extend(self._rows_from_batch(label_items, now, excerpt_from_text=False))
+        return rows, skipped, errors
 
-    def _embed_image_file(
-        self, path: Path, abs_path: str
-    ) -> Tuple[str, Optional[np.ndarray]]:
-        """Index images in the *text* embedding space so NL search works.
-
-        CLIP is optional and used only to enrich the excerpt label when cheap;
-        the stored vector always comes from the text model (same space as queries).
-        """
-        visual_label = None
-        try:
-            if path.stat().st_size <= 8 * 1024 * 1024:
-                from PIL import Image
-
-                img = Image.open(path).convert("RGB")
-                clip = self._load_image_model()
-                prompts = [
-                    "a photo of a document or ID",
-                    "a receipt or invoice",
-                    "a screenshot",
-                    "a personal photo",
-                    "a diagram or chart",
-                    "other image",
-                ]
-                from sentence_transformers import util
-
-                img_emb = clip.encode(img)
-                prompt_embs = clip.encode(prompts)
-                sims = util.cos_sim(img_emb, prompt_embs)[0]
-                visual_label = prompts[int(sims.argmax())]
-        except Exception:
-            visual_label = None
-
-        if visual_label:
-            label = f"Image ({visual_label}): {path.name}"
-        else:
-            label = f"Image file: {path.name}"
-        model = self._load_text_model()
-        emb = np.asarray(model.encode(label), dtype=np.float32)
-        return label, emb
+    def _rows_from_batch(
+        self,
+        items: List[Tuple[Dict[str, Any], str]],
+        now: float,
+        excerpt_from_text: bool,
+    ) -> List[Dict[str, Any]]:
+        if not items:
+            return []
+        embs = _encode_batch([text for _item, text in items])
+        rows = []
+        for (item, text), emb in zip(items, embs):
+            excerpt = text[:MAX_EXCERPT_CHARS] if excerpt_from_text else text
+            rows.append(
+                {
+                    "path": item["path"],
+                    "mtime": item["mtime"],
+                    "size": item["size"],
+                    "mime": item["mime"],
+                    "text_excerpt": excerpt[:MAX_EXCERPT_CHARS],
+                    "embedding": np.asarray(emb, dtype=np.float32).tobytes(),
+                    "embedding_dim": int(np.asarray(emb).shape[0]),
+                    "last_indexed": now,
+                }
+            )
+        return rows
