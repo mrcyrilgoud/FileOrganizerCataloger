@@ -16,18 +16,11 @@ from explain import ExplainError, FileExplainer
 from indexer import Indexer
 from search import SemanticSearch
 
-app = FastAPI(
-    title="Sonic Telescope API",
-    description="Local semantic file library (Phase 1). Cleanup/organize stubs later.",
-)
+app = FastAPI(title="Sonic Telescope API", description="Local semantic file library (Phase 1).")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
-
 searcher = SemanticSearch()
 indexer = Indexer(store=searcher.store, on_change=searcher.invalidate)
 explainer = FileExplainer(store=searcher.store)
@@ -44,10 +37,7 @@ class SearchRequest(BaseModel):
 
 class ExplainRequest(BaseModel):
     path: str
-    model: Optional[str] = Field(
-        default=None,
-        description="Optional Ollama model override (default: qwen3:4b-instruct / SONIC_EXPLAIN_MODEL).",
-    )
+    model: Optional[str] = None
 
 
 class DeleteRequest(BaseModel):
@@ -56,6 +46,10 @@ class DeleteRequest(BaseModel):
 
 class OpenRequest(BaseModel):
     file_path: str
+
+
+def _http(code, detail, exc=None):
+    raise HTTPException(status_code=code, detail=detail) from exc
 
 
 @app.get("/health")
@@ -71,15 +65,14 @@ def health_check():
 
 @app.post("/index")
 def index_directory(req: DirectoryRequest):
-    directory = req.directory
-    if not os.path.isdir(directory):
-        raise HTTPException(status_code=400, detail="Invalid directory path")
+    if not os.path.isdir(req.directory):
+        _http(400, "Invalid directory path")
     try:
-        return indexer.index_directory(directory)
+        return indexer.index_directory(req.directory)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _http(400, str(exc), exc)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail="Index failed: %s" % exc) from exc
+        _http(500, "Index failed: %s" % exc, exc)
 
 
 @app.post("/search")
@@ -88,40 +81,32 @@ def semantic_search(req: SearchRequest):
         hits = searcher.search(req.query, limit=req.limit or 20)
         return {"query": req.query, "count": len(hits), "results": hits}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail="Search failed: %s" % exc) from exc
+        _http(500, "Search failed: %s" % exc, exc)
 
 
 @app.post("/explain")
 def explain_file(req: ExplainRequest):
     try:
-        if req.model:
-            return FileExplainer(store=indexer.store, model=req.model).explain(req.path)
-        return explainer.explain(req.path)
+        target = FileExplainer(store=indexer.store, model=req.model) if req.model else explainer
+        return target.explain(req.path)
     except ExplainError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        _http(503, str(exc), exc)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail="Explain failed: %s" % exc) from exc
+        _http(500, "Explain failed: %s" % exc, exc)
 
 
 @app.post("/delete")
 def delete_item(req: DeleteRequest):
-    if os.path.isdir(req.file_path):
-        success, msg = delete_directory_safely(req.file_path)
-    else:
-        success, msg = delete_file_safely(req.file_path)
+    fn = delete_directory_safely if os.path.isdir(req.file_path) else delete_file_safely
+    success, msg = fn(req.file_path)
     if not success:
-        raise HTTPException(status_code=400, detail=msg)
+        _http(400, msg)
     try:
         indexer.store.delete(req.file_path)
         searcher.invalidate()
     except Exception:
         pass
     return {"status": "deleted", "path": req.file_path}
-
-
-@app.post("/browse")
-def browse_directory():
-    return browse_directory_process()
 
 
 def _tkinter_worker(queue):
@@ -132,9 +117,8 @@ def _tkinter_worker(queue):
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        folder_selected = filedialog.askdirectory()
+        queue.put(filedialog.askdirectory())
         root.destroy()
-        queue.put(folder_selected)
     except Exception:
         queue.put(None)
 
@@ -157,17 +141,20 @@ def browse_directory_process():
         return {"path": ""}
 
 
+@app.post("/browse")
+def browse_directory():
+    return browse_directory_process()
+
+
 @app.post("/open")
 def open_file(req: OpenRequest):
     if not os.path.exists(req.file_path):
-        raise HTTPException(status_code=404, detail="File not found")
+        _http(404, "File not found")
     try:
         subprocess.call(["open", req.file_path])
         return {"status": "opened", "path": req.file_path}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=500, detail="Failed to open file: %s" % exc
-        ) from exc
+        _http(500, "Failed to open file: %s" % exc, exc)
 
 
 if __name__ == "__main__":
