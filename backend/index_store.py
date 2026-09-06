@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 APP_DIR = Path.home() / ".sonic-telescope"
 DB_PATH = APP_DIR / "index.db"
+
+_UPSERT_SQL = """
+INSERT INTO files (
+    path, mtime, size, mime, text_excerpt,
+    embedding, embedding_dim, last_indexed
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(path) DO UPDATE SET
+    mtime = excluded.mtime,
+    size = excluded.size,
+    mime = excluded.mime,
+    text_excerpt = excluded.text_excerpt,
+    embedding = excluded.embedding,
+    embedding_dim = excluded.embedding_dim,
+    last_indexed = excluded.last_indexed
+"""
 
 
 def ensure_app_dir() -> Path:
@@ -45,17 +59,39 @@ class IndexStore:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime)")
             conn.commit()
 
     def get(self, path: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM files WHERE path = ?", (path,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM files WHERE path = ?", (path,)).fetchone()
             return dict(row) if row else None
+
+    def meta_map(self) -> Dict[str, Tuple[float, int]]:
+        """path -> (mtime, size) for cheap unchanged-file skips."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT path, mtime, size FROM files").fetchall()
+        return {r["path"]: (float(r["mtime"]), int(r["size"])) for r in rows}
+
+    def upsert_many(self, rows: Iterable[Dict[str, Any]]) -> None:
+        payload = [
+            (
+                row["path"],
+                row["mtime"],
+                row["size"],
+                row["mime"],
+                row["text_excerpt"],
+                row["embedding"],
+                row["embedding_dim"],
+                row["last_indexed"],
+            )
+            for row in rows
+        ]
+        if not payload:
+            return
+        with self._connect() as conn:
+            conn.executemany(_UPSERT_SQL, payload)
+            conn.commit()
 
     def upsert(
         self,
@@ -69,34 +105,20 @@ class IndexStore:
         embedding_dim: int,
         last_indexed: float,
     ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO files (
-                    path, mtime, size, mime, text_excerpt,
-                    embedding, embedding_dim, last_indexed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
-                    mtime = excluded.mtime,
-                    size = excluded.size,
-                    mime = excluded.mime,
-                    text_excerpt = excluded.text_excerpt,
-                    embedding = excluded.embedding,
-                    embedding_dim = excluded.embedding_dim,
-                    last_indexed = excluded.last_indexed
-                """,
-                (
-                    path,
-                    mtime,
-                    size,
-                    mime,
-                    text_excerpt,
-                    embedding,
-                    embedding_dim,
-                    last_indexed,
-                ),
-            )
-            conn.commit()
+        self.upsert_many(
+            [
+                {
+                    "path": path,
+                    "mtime": mtime,
+                    "size": size,
+                    "mime": mime,
+                    "text_excerpt": text_excerpt,
+                    "embedding": embedding,
+                    "embedding_dim": embedding_dim,
+                    "last_indexed": last_indexed,
+                }
+            ]
+        )
 
     def delete(self, path: str) -> None:
         with self._connect() as conn:

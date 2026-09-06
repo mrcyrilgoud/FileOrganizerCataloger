@@ -28,9 +28,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-indexer = Indexer()
-searcher = SemanticSearch(store=indexer.store)
-explainer = FileExplainer(store=indexer.store)
+searcher = SemanticSearch()
+indexer = Indexer(store=searcher.store, on_change=searcher.invalidate)
+explainer = FileExplainer(store=searcher.store)
 
 
 class DirectoryRequest(BaseModel):
@@ -113,6 +113,7 @@ def delete_item(req: DeleteRequest):
         raise HTTPException(status_code=400, detail=msg)
     try:
         indexer.store.delete(req.file_path)
+        searcher.invalidate()
     except Exception:
         pass
     return {"status": "deleted", "path": req.file_path}

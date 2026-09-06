@@ -60,8 +60,9 @@ Phase 1 is the product. Cleanup and organization are agents that *query the same
 | Module | Role |
 |--------|------|
 | `backend/index_store.py` | SQLite under `~/.sonic-telescope/`. Files table: path, mtime, size, mime, text_excerpt, embedding blob, last_indexed. |
-| `backend/indexer.py` | Walk directory; bounded text extract; embed with text model; CLIP for images when cheap; skip huge binaries; upsert. |
-| `backend/search.py` | Embed query; cosine top-k against stored embeddings; return path, score, snippet. |
+| `backend/models.py` | Shared lazy singletons: `get_text_model()` / optional `get_image_model()`. |
+| `backend/indexer.py` | Walk + skip unchanged (mtime+size); batch embed; CLIP only if `SONIC_ENABLE_CLIP`; `upsert_many`. |
+| `backend/search.py` | Shared text model; L2 matrix cache; vectorized cosine + argpartition top-k. |
 | `backend/explain.py` | Call `http://127.0.0.1:11434` with **qwen3:4b-instruct**. Input = metadata + short excerpt only. Fail closed if Ollama is down. |
 | `backend/main.py` | FastAPI: `/index`, `/search`, `/explain` + keep `/health`, `/browse`, `/open`, `/delete`. |
 
@@ -69,7 +70,7 @@ Phase 1 is the product. Cleanup and organization are agents that *query the same
 - App data dir: `~/.sonic-telescope/`
 - DB file: `~/.sonic-telescope/index.db`
 - Embeddings stored as float32 blobs (numpy `tobytes`) so search stays in-process with no vector DB dependency for v1
-- Upsert keyed by absolute path; re-index when mtime changes
+- Upsert keyed by absolute path; re-index only when mtime **or** size changes
 
 ### Privacy (local-only)
 - File bytes never leave the machine
