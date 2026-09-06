@@ -33,7 +33,7 @@ Backend: cd backend, install requirements with the Python that has sentence-tran
 Frontend: cd frontend, install deps, run Vite dev server, open localhost:5173.
 
 ## API Phase 1
-GET /health | POST /index | POST /search | POST /explain | browse/open/delete | legacy /scan
+GET /health | POST /index | POST /search | POST /explain | POST /browse | POST /open | POST /delete
 
 ## Smoke test
 Hit /health, /index a small folder, /search a query, /explain a path when Ollama is up.

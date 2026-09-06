@@ -63,7 +63,7 @@ Phase 1 is the product. Cleanup and organization are agents that *query the same
 | `backend/indexer.py` | Walk directory; bounded text extract; embed with text model; CLIP for images when cheap; skip huge binaries; upsert. |
 | `backend/search.py` | Embed query; cosine top-k against stored embeddings; return path, score, snippet. |
 | `backend/explain.py` | Call `http://127.0.0.1:11434` with **qwen3:4b-instruct**. Input = metadata + short excerpt only. Fail closed if Ollama is down. |
-| `backend/main.py` | FastAPI: `/index`, `/search`, `/explain` + keep `/health`, `/browse`, `/open`, `/delete`; `/scan` legacy. |
+| `backend/main.py` | FastAPI: `/index`, `/search`, `/explain` + keep `/health`, `/browse`, `/open`, `/delete`. |
 
 ### Index store details
 - App data dir: `~/.sonic-telescope/`
@@ -120,5 +120,5 @@ Same index; no schema rewrite required beyond optional `category` / `planned_pat
 ---
 
 ## Compatibility
-- Legacy `POST /scan` remains for the old importance analyzer during transition
 - Frontend primary flow is Index → Search → Explain
+- Legacy importance analyzer / `POST /scan` has been removed

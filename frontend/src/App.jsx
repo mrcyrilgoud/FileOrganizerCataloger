@@ -4,6 +4,17 @@ import './App.css';
 
 const API_URL = 'http://localhost:8000';
 
+function apiDetail(err, fallback) {
+  return err.response?.data?.detail || err.message || fallback;
+}
+
+function formatBytes(bytes) {
+  if (!+bytes) return '0 B';
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / 1024 ** i).toFixed(1)} ${sizes[i]}`;
+}
+
 function App() {
   const [directory, setDirectory] = useState('');
   const [query, setQuery] = useState('');
@@ -21,7 +32,7 @@ function App() {
       const res = await axios.post(`${API_URL}/browse`);
       if (res.data.path) setDirectory(res.data.path);
     } catch (err) {
-      alert('Failed to open folder picker: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to open folder picker: ${apiDetail(err, 'browse failed')}`);
     }
   };
 
@@ -38,7 +49,7 @@ function App() {
         `Indexed ${res.data.indexed} new, updated ${res.data.updated}, skipped ${res.data.skipped}. Store total: ${res.data.total_in_store}.`
       );
     } catch (err) {
-      setError(err.response?.data?.detail || 'Index failed');
+      setError(apiDetail(err, 'Index failed'));
     } finally {
       setLoading(false);
     }
@@ -50,18 +61,12 @@ function App() {
     setSearching(true);
     setError(null);
     try {
-      const res = await axios.post(`${API_URL}/search`, {
-        query: query.trim(),
-        limit: 20,
-      });
-      setResults(res.data.results || []);
-      if (!(res.data.results || []).length) {
-        setStatusMsg('No matches. Index a directory first, or try a different query.');
-      } else {
-        setStatusMsg(`Found ${res.data.count} result(s).`);
-      }
+      const res = await axios.post(`${API_URL}/search`, { query: query.trim(), limit: 20 });
+      const hits = res.data.results || [];
+      setResults(hits);
+      setStatusMsg(hits.length ? `Found ${res.data.count} result(s).` : 'No matches. Index a directory first, or try a different query.');
     } catch (err) {
-      setError(err.response?.data?.detail || 'Search failed');
+      setError(apiDetail(err, 'Search failed'));
     } finally {
       setSearching(false);
     }
@@ -74,10 +79,9 @@ function App() {
       const res = await axios.post(`${API_URL}/explain`, { path });
       setExplanations((prev) => ({ ...prev, [path]: res.data.explanation }));
     } catch (err) {
-      const detail = err.response?.data?.detail || err.message;
       setExplanations((prev) => ({
         ...prev,
-        [path]: `Explain unavailable: ${detail}`,
+        [path]: `Explain unavailable: ${apiDetail(err, err.message)}`,
       }));
     } finally {
       setExplainingPath(null);
@@ -88,7 +92,7 @@ function App() {
     try {
       await axios.post(`${API_URL}/open`, { file_path: path });
     } catch (err) {
-      alert('Failed to open: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to open: ${apiDetail(err, 'open failed')}`);
     }
   };
 
@@ -98,16 +102,8 @@ function App() {
       await axios.post(`${API_URL}/delete`, { file_path: path });
       setResults((prev) => prev.filter((r) => r.path !== path));
     } catch (err) {
-      alert('Failed to delete: ' + (err.response?.data?.detail || err.message));
+      alert(`Failed to delete: ${apiDetail(err, 'delete failed')}`);
     }
-  };
-
-  const formatBytes = (bytes) => {
-    if (!+bytes) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
   return (
@@ -128,10 +124,7 @@ function App() {
 
         <div className="panels-row">
           <section className="panel">
-            <h2>
-              <span className="panel-step">1</span>
-              Index a folder
-            </h2>
+            <h2><span className="panel-step">1</span> Index a folder</h2>
             <div className="controls">
               <input
                 type="text"
@@ -140,25 +133,15 @@ function App() {
                 onChange={(e) => setDirectory(e.target.value)}
                 className="dir-input"
               />
-              <button type="button" onClick={handleBrowse} className="browse-btn">
-                Browse
-              </button>
-              <button
-                type="button"
-                onClick={handleIndex}
-                disabled={loading || !directory}
-                className="primary-btn"
-              >
+              <button type="button" onClick={handleBrowse} className="browse-btn">Browse</button>
+              <button type="button" onClick={handleIndex} disabled={loading || !directory} className="primary-btn">
                 {loading ? 'Indexing…' : 'Index'}
               </button>
             </div>
           </section>
 
           <section className="panel">
-            <h2>
-              <span className="panel-step">2</span>
-              Search
-            </h2>
+            <h2><span className="panel-step">2</span> Search</h2>
             <form className="controls" onSubmit={handleSearch}>
               <input
                 type="text"
@@ -167,11 +150,7 @@ function App() {
                 onChange={(e) => setQuery(e.target.value)}
                 className="dir-input search-input"
               />
-              <button
-                type="submit"
-                disabled={searching || !query.trim()}
-                className="primary-btn"
-              >
+              <button type="submit" disabled={searching || !query.trim()} className="primary-btn">
                 {searching ? 'Searching…' : 'Search'}
               </button>
             </form>
@@ -180,7 +159,6 @@ function App() {
 
         {error && <div className="error">{error}</div>}
         {statusMsg && <div className="status">{statusMsg}</div>}
-
         {indexStats && indexStats.error_count > 0 && (
           <div className="status warn">
             {indexStats.error_count} file(s) had errors during index (first few logged server-side).
@@ -204,9 +182,7 @@ function App() {
                     <div className="meta-row">
                       <span className="score-badge">score {file.score}</span>
                       {file.mime && <span className="mime">{file.mime}</span>}
-                      {file.size != null && (
-                        <span className="file-size">{formatBytes(file.size)}</span>
-                      )}
+                      {file.size != null && <span className="file-size">{formatBytes(file.size)}</span>}
                     </div>
                     {file.snippet && <p className="snippet">{file.snippet}</p>}
                     {file.reasons && <p className="reasons">{file.reasons}</p>}
@@ -227,20 +203,8 @@ function App() {
                     >
                       {explainingPath === file.path ? 'Explaining…' : 'Explain'}
                     </button>
-                    <button
-                      type="button"
-                      className="open-btn"
-                      onClick={() => handleOpen(file.path)}
-                    >
-                      Open
-                    </button>
-                    <button
-                      type="button"
-                      className="delete-btn"
-                      onClick={() => handleDelete(file.path)}
-                    >
-                      Trash
-                    </button>
+                    <button type="button" className="open-btn" onClick={() => handleOpen(file.path)}>Open</button>
+                    <button type="button" className="delete-btn" onClick={() => handleDelete(file.path)}>Trash</button>
                   </div>
                 </div>
               ))}

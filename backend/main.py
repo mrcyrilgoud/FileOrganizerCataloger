@@ -1,4 +1,4 @@
-"""Sonic Telescope FastAPI — Phase 1 semantic library + legacy scan."""
+"""Sonic Telescope FastAPI — Phase 1 semantic library."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from actions import delete_directory_safely, delete_file_safely
-from analyzer import FileAnalyzer
 from explain import ExplainError, FileExplainer
 from indexer import Indexer
 from search import SemanticSearch
@@ -21,7 +20,6 @@ app = FastAPI(
     title="Sonic Telescope API",
     description="Local semantic file library (Phase 1). Cleanup/organize stubs later.",
 )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,8 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Lazy-capable shared instances
-analyzer = FileAnalyzer()
 indexer = Indexer()
 searcher = SemanticSearch(store=indexer.store)
 explainer = FileExplainer(store=indexer.store)
@@ -75,32 +71,28 @@ def health_check():
 
 @app.post("/index")
 def index_directory(req: DirectoryRequest):
-    """Walk a directory, embed files, upsert into the local SQLite index (sync v1)."""
     directory = req.directory
     if not os.path.isdir(directory):
         raise HTTPException(status_code=400, detail="Invalid directory path")
     try:
-        result = indexer.index_directory(directory)
-        return result
+        return indexer.index_directory(directory)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Index failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Index failed: %s" % exc) from exc
 
 
 @app.post("/search")
 def semantic_search(req: SearchRequest):
-    """Embed the query and return top-k cosine matches from the local index."""
     try:
         hits = searcher.search(req.query, limit=req.limit or 20)
         return {"query": req.query, "count": len(hits), "results": hits}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Search failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Search failed: %s" % exc) from exc
 
 
 @app.post("/explain")
 def explain_file(req: ExplainRequest):
-    """Ask local Ollama why a file might matter. Default: qwen3:4b-instruct. Fail closed if down."""
     try:
         if req.model:
             return FileExplainer(store=indexer.store, model=req.model).explain(req.path)
@@ -108,59 +100,17 @@ def explain_file(req: ExplainRequest):
     except ExplainError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"Explain failed: {exc}") from exc
-
-
-@app.post("/scan")
-def scan_directory(req: DirectoryRequest):
-    """
-    LEGACY: importance-score scan using FileAnalyzer.
-
-    Prefer POST /index + POST /search for the Phase 1 product flow.
-    Kept for compatibility during the redesign transition.
-    """
-    directory = req.directory
-    if not os.path.isdir(directory):
-        raise HTTPException(status_code=400, detail="Invalid directory path")
-
-    results = []
-    for root, dirs, files in os.walk(directory):
-        for d in dirs:
-            if d.startswith("."):
-                continue
-            full_path = os.path.join(root, d)
-            results.append(
-                {
-                    "path": full_path,
-                    "filename": d,
-                    "importance": "Container",
-                    "score": 0.0,
-                    "reasons": "Sub-directory",
-                    "mime_type": "directory",
-                    "modified": "",
-                }
-            )
-        for file in files:
-            if file.startswith("."):
-                continue
-            full_path = os.path.join(root, file)
-            results.append(analyzer.analyze_file(full_path))
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    return results
+        raise HTTPException(status_code=500, detail="Explain failed: %s" % exc) from exc
 
 
 @app.post("/delete")
 def delete_item(req: DeleteRequest):
-    """Manually delete a file OR directory (send to Trash)."""
     if os.path.isdir(req.file_path):
         success, msg = delete_directory_safely(req.file_path)
     else:
         success, msg = delete_file_safely(req.file_path)
-
     if not success:
         raise HTTPException(status_code=400, detail=msg)
-    # Keep search index consistent when possible
     try:
         indexer.store.delete(req.file_path)
     except Exception:
@@ -170,7 +120,6 @@ def delete_item(req: DeleteRequest):
 
 @app.post("/browse")
 def browse_directory():
-    """Open a native folder picker on the server machine; return selected path."""
     return browse_directory_process()
 
 
@@ -209,7 +158,6 @@ def browse_directory_process():
 
 @app.post("/open")
 def open_file(req: OpenRequest):
-    """Open a file with the default OS application (macOS `open`)."""
     if not os.path.exists(req.file_path):
         raise HTTPException(status_code=404, detail="File not found")
     try:
@@ -217,7 +165,7 @@ def open_file(req: OpenRequest):
         return {"status": "opened", "path": req.file_path}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
-            status_code=500, detail=f"Failed to open file: {exc}"
+            status_code=500, detail="Failed to open file: %s" % exc
         ) from exc
 
 

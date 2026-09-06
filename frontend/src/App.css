@@ -26,7 +26,6 @@
   --radius-pill: 999px;
 }
 
-/* —— Shell & animated night sky —— */
 .app-shell {
   position: relative;
   isolation: isolate;
@@ -107,7 +106,6 @@
   padding: 28px 20px 48px;
 }
 
-/* —— Header —— */
 .header {
   display: flex;
   flex-direction: column;
@@ -127,6 +125,7 @@
   position: relative;
   width: 44px;
   height: 44px;
+  flex-shrink: 0;
   border-radius: 50%;
   background:
     radial-gradient(circle at 35% 35%, #fff 0 8%, transparent 10%),
@@ -134,17 +133,18 @@
     radial-gradient(circle at 50% 50%, rgba(167, 139, 250, 0.35), transparent 65%),
     linear-gradient(135deg, rgba(34, 211, 238, 0.35), rgba(167, 139, 250, 0.45));
   border: 1px solid var(--glass-border-cyan);
-  box-shadow:
-    0 0 24px rgba(34, 211, 238, 0.35),
-    inset 0 0 12px rgba(255, 255, 255, 0.15);
-  flex-shrink: 0;
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.35), inset 0 0 12px rgba(255, 255, 255, 0.15);
+}
+
+.logo-mark::after,
+.empty-icon::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
 }
 
 .logo-mark::after {
-  content: "";
-  position: absolute;
   inset: 10px;
-  border-radius: 50%;
   border: 1.5px solid rgba(34, 211, 238, 0.55);
   box-shadow: 0 0 8px rgba(34, 211, 238, 0.4);
 }
@@ -194,7 +194,6 @@
   box-shadow: 0 0 8px var(--cyan);
 }
 
-/* —— Glass panels —— */
 .panels-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -269,7 +268,6 @@
   box-shadow: 0 0 0 3px var(--cyan-soft);
 }
 
-/* —— Buttons —— */
 .primary-btn,
 .browse-btn,
 .explain-btn,
@@ -283,6 +281,8 @@
   border: 1px solid transparent;
   transition: background 0.2s, border-color 0.2s, transform 0.15s, box-shadow 0.2s;
   white-space: nowrap;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .primary-btn:active:not(:disabled),
@@ -298,8 +298,6 @@
   border-color: rgba(34, 211, 238, 0.45);
   color: #e0f7ff;
   box-shadow: 0 4px 16px rgba(34, 211, 238, 0.15);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
 .primary-btn:hover:not(:disabled) {
@@ -307,66 +305,52 @@
   box-shadow: 0 6px 20px rgba(34, 211, 238, 0.25);
 }
 
-.primary-btn:disabled {
+.primary-btn:disabled,
+.explain-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.primary-btn:disabled {
   box-shadow: none;
+}
+
+.explain-btn:disabled {
+  opacity: 0.5;
 }
 
 .browse-btn {
   background: var(--violet-soft);
   border-color: rgba(167, 139, 250, 0.4);
   color: #ddd6fe;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
-.browse-btn:hover {
-  background: rgba(167, 139, 250, 0.32);
-}
+.browse-btn:hover { background: rgba(167, 139, 250, 0.32); }
 
 .explain-btn {
   background: var(--emerald-soft);
   border-color: rgba(52, 211, 153, 0.4);
   color: #a7f3d0;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
-.explain-btn:hover:not(:disabled) {
-  background: rgba(52, 211, 153, 0.28);
-}
-
-.explain-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.explain-btn:hover:not(:disabled) { background: rgba(52, 211, 153, 0.28); }
 
 .open-btn {
   background: var(--cyan-soft);
   border-color: rgba(34, 211, 238, 0.35);
   color: #a5f3fc;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
-.open-btn:hover {
-  background: rgba(34, 211, 238, 0.28);
-}
+.open-btn:hover { background: rgba(34, 211, 238, 0.28); }
 
 .delete-btn {
   background: var(--danger-soft);
   border-color: rgba(248, 113, 113, 0.4);
   color: #fecaca;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
 }
 
-.delete-btn:hover {
-  background: rgba(248, 113, 113, 0.3);
-}
+.delete-btn:hover { background: rgba(248, 113, 113, 0.3); }
 
-/* —— Status / error —— */
 .error,
 .status {
   padding: 12px 14px;
@@ -395,10 +379,7 @@
   border-color: rgba(251, 191, 36, 0.4);
 }
 
-/* —— Results —— */
-.results-section {
-  margin-top: 8px;
-}
+.results-section { margin-top: 8px; }
 
 .results-section > h2 {
   margin: 0 0 14px 0;
@@ -424,19 +405,16 @@
   height: 56px;
   margin: 0 auto 16px;
   border-radius: 50%;
+  position: relative;
   background:
     radial-gradient(circle at 40% 35%, #fff 0 6%, transparent 8%),
     linear-gradient(135deg, rgba(34, 211, 238, 0.25), rgba(167, 139, 250, 0.3));
   border: 1px solid var(--glass-border-cyan);
   box-shadow: 0 0 28px rgba(34, 211, 238, 0.2);
-  position: relative;
 }
 
 .empty-icon::after {
-  content: "";
-  position: absolute;
   inset: 14px;
-  border-radius: 50%;
   border: 1.5px solid rgba(34, 211, 238, 0.5);
 }
 
@@ -476,15 +454,10 @@
 
 .file-card:hover {
   border-color: rgba(34, 211, 238, 0.25);
-  box-shadow:
-    0 12px 40px rgba(0, 0, 0, 0.4),
-    0 0 0 1px rgba(34, 211, 238, 0.08) inset;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(34, 211, 238, 0.08) inset;
 }
 
-.file-info {
-  flex: 1;
-  min-width: 0;
-}
+.file-info { flex: 1; min-width: 0; }
 
 .file-info h3 {
   margin: 0 0 8px 0;
@@ -586,7 +559,6 @@
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-/* —— Footer —— */
 .footer {
   margin-top: 40px;
   text-align: center;
@@ -605,50 +577,19 @@
   -webkit-backdrop-filter: blur(8px);
 }
 
-/* —— Responsive —— */
 @media (max-width: 780px) {
-  .panels-row {
-    grid-template-columns: 1fr;
-  }
+  .panels-row { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 640px) {
-  .container {
-    padding: 20px 14px 36px;
-  }
-
-  .file-card {
-    flex-direction: column;
-  }
-
-  .file-actions {
-    flex-direction: row;
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .file-actions button {
-    flex: 1;
-    min-width: 90px;
-  }
-
-  .controls {
-    flex-direction: column;
-  }
-
-  .dir-input,
-  .search-input,
-  .primary-btn,
-  .browse-btn {
-    width: 100%;
-  }
+  .container { padding: 20px 14px 36px; }
+  .file-card { flex-direction: column; }
+  .file-actions { flex-direction: row; flex-wrap: wrap; width: 100%; }
+  .file-actions button { flex: 1; min-width: 90px; }
+  .controls { flex-direction: column; }
+  .dir-input, .search-input, .primary-btn, .browse-btn { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .app-shell,
-  .orb-a,
-  .orb-b,
-  .orb-c {
-    animation: none;
-  }
+  .app-shell, .orb-a, .orb-b, .orb-c { animation: none; }
 }
