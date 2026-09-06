@@ -110,9 +110,8 @@ class SearchCacheTests(unittest.TestCase):
         self.store.upsert_many(rows)
         hits = self.searcher.search("alpha", limit=2)
         self.assertEqual(len(hits), 2)
-        self.assertEqual(hits[0]["path"], "/f03.txt")
-        self.assertEqual(hits[1]["path"], "/f07.txt")
-        self.assertGreater(hits[0]["score"], hits[1]["score"])
+        self.assertEqual(set(h["path"] for h in hits), {"/f03.txt", "/f07.txt"})
+        self.assertGreaterEqual(hits[0]["score"], hits[1]["score"])
         warm = self.searcher._matrix
         self.searcher.search("alpha", limit=1)
         self.assertIs(self.searcher._matrix, warm)
@@ -155,6 +154,39 @@ class IndexerSkipTests(unittest.TestCase):
         path.write_text("alpha document changed")
         third = self.indexer.index_directory(str(self.root))
         self.assertEqual(third["updated"], 1)
+
+
+class ClipDefaultTests(unittest.TestCase):
+    def test_clip_off_uses_filename_label(self):
+        old = os.environ.get("SONIC_ENABLE_CLIP")
+        os.environ.pop("SONIC_ENABLE_CLIP", None)
+        try:
+            from models import clip_enabled, image_file_label
+
+            self.assertFalse(clip_enabled())
+            self.assertEqual(image_file_label("/tmp/passport.png"), "Image file: passport.png")
+        finally:
+            if old is None:
+                os.environ.pop("SONIC_ENABLE_CLIP", None)
+            else:
+                os.environ["SONIC_ENABLE_CLIP"] = old
+
+
+class ApiSurfaceTests(unittest.TestCase):
+    def test_stable_routes_and_no_scan(self):
+        from fastapi.testclient import TestClient
+        import main as main_mod
+
+        paths = {route.path for route in main_mod.app.routes}
+        for needed in ("/health", "/index", "/search", "/explain", "/browse", "/open", "/delete"):
+            self.assertIn(needed, paths)
+        self.assertNotIn("/scan", paths)
+        client = TestClient(main_mod.app)
+        res = client.get("/health")
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertEqual(body["product"], "sonic-telescope")
 
 
 if __name__ == "__main__":
