@@ -1,36 +1,31 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
 const API_URL = 'http://localhost:8000';
 
-function apiDetail(err, fallback) {
-  return err.response?.data?.detail || err.message || fallback;
-}
-
-function formatBytes(bytes) {
+const apiDetail = (err, fallback) => err.response?.data?.detail || err.message || fallback;
+const post = (path, body) => axios.post(`${API_URL}${path}`, body);
+const formatBytes = (bytes) => {
   if (!+bytes) return '0 B';
-  const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / 1024 ** i).toFixed(1)} ${sizes[i]}`;
-}
+  return `${(bytes / 1024 ** i).toFixed(1)} ${['B', 'KB', 'MB', 'GB'][i]}`;
+};
 
 function App() {
   const [directory, setDirectory] = useState('');
   const [query, setQuery] = useState('');
   const [results, setResults] = useState([]);
-  const [indexStats, setIndexStats] = useState(null);
+  const [indexErrors, setIndexErrors] = useState(0);
   const [explanations, setExplanations] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [searching, setSearching] = useState(false);
-  const [explainingPath, setExplainingPath] = useState(null);
+  const [busy, setBusy] = useState('');
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
 
   const handleBrowse = async () => {
     try {
-      const res = await axios.post(`${API_URL}/browse`);
-      if (res.data.path) setDirectory(res.data.path);
+      const { data } = await post('/browse');
+      if (data.path) setDirectory(data.path);
     } catch (err) {
       alert(`Failed to open folder picker: ${apiDetail(err, 'browse failed')}`);
     }
@@ -38,59 +33,54 @@ function App() {
 
   const handleIndex = async () => {
     if (!directory) return;
-    setLoading(true);
+    setBusy('index');
     setError(null);
     setStatusMsg(null);
-    setIndexStats(null);
+    setIndexErrors(0);
     try {
-      const res = await axios.post(`${API_URL}/index`, { directory });
-      setIndexStats(res.data);
-      setStatusMsg(
-        `Indexed ${res.data.indexed} new, updated ${res.data.updated}, skipped ${res.data.skipped}. Store total: ${res.data.total_in_store}.`
-      );
+      const { data } = await post('/index', { directory });
+      setIndexErrors(data.error_count || 0);
+      setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
     } catch (err) {
       setError(apiDetail(err, 'Index failed'));
     } finally {
-      setLoading(false);
+      setBusy('');
     }
   };
 
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
-    setSearching(true);
+    setBusy('search');
     setError(null);
     try {
-      const res = await axios.post(`${API_URL}/search`, { query: query.trim(), limit: 20 });
-      const hits = res.data.results || [];
+      const { data } = await post('/search', { query: query.trim(), limit: 20 });
+      const hits = data.results || [];
       setResults(hits);
-      setStatusMsg(hits.length ? `Found ${res.data.count} result(s).` : 'No matches. Index a directory first, or try a different query.');
+      setStatusMsg(hits.length ? `Found ${data.count} result(s).` : 'No matches. Index a directory first, or try a different query.');
     } catch (err) {
       setError(apiDetail(err, 'Search failed'));
     } finally {
-      setSearching(false);
+      setBusy('');
     }
   };
 
   const handleExplain = async (path) => {
-    setExplainingPath(path);
+    setBusy(path);
     setError(null);
     try {
-      const res = await axios.post(`${API_URL}/explain`, { path });
-      setExplanations((prev) => ({ ...prev, [path]: res.data.explanation }));
+      const { data } = await post('/explain', { path });
+      setExplanations((prev) => ({ ...prev, [path]: data.explanation }));
     } catch (err) {
-      setExplanations((prev) => ({
-        ...prev,
-        [path]: `Explain unavailable: ${apiDetail(err, err.message)}`,
-      }));
+      setExplanations((prev) => ({ ...prev, [path]: `Explain unavailable: ${apiDetail(err, err.message)}` }));
     } finally {
-      setExplainingPath(null);
+      setBusy('');
     }
   };
 
   const handleOpen = async (path) => {
     try {
-      await axios.post(`${API_URL}/open`, { file_path: path });
+      await post('/open', { file_path: path });
     } catch (err) {
       alert(`Failed to open: ${apiDetail(err, 'open failed')}`);
     }
@@ -99,7 +89,7 @@ function App() {
   const handleDelete = async (path) => {
     if (!window.confirm(`Move to Trash?\n${path}`)) return;
     try {
-      await axios.post(`${API_URL}/delete`, { file_path: path });
+      await post('/delete', { file_path: path });
       setResults((prev) => prev.filter((r) => r.path !== path));
     } catch (err) {
       alert(`Failed to delete: ${apiDetail(err, 'delete failed')}`);
@@ -123,7 +113,7 @@ function App() {
         </header>
 
         <div className="panels-row">
-          <section className="panel">
+          <section className="panel glass">
             <h2><span className="panel-step">1</span> Index a folder</h2>
             <div className="controls">
               <input
@@ -133,14 +123,19 @@ function App() {
                 onChange={(e) => setDirectory(e.target.value)}
                 className="dir-input"
               />
-              <button type="button" onClick={handleBrowse} className="browse-btn">Browse</button>
-              <button type="button" onClick={handleIndex} disabled={loading || !directory} className="primary-btn">
-                {loading ? 'Indexing…' : 'Index'}
+              <button type="button" onClick={handleBrowse} className="btn browse-btn">Browse</button>
+              <button
+                type="button"
+                onClick={handleIndex}
+                disabled={busy === 'index' || !directory}
+                className="btn primary-btn"
+              >
+                {busy === 'index' ? 'Indexing…' : 'Index'}
               </button>
             </div>
           </section>
 
-          <section className="panel">
+          <section className="panel glass">
             <h2><span className="panel-step">2</span> Search</h2>
             <form className="controls" onSubmit={handleSearch}>
               <input
@@ -148,27 +143,25 @@ function App() {
                 placeholder='e.g. "tax docs from last year" or "passport photos"'
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                className="dir-input search-input"
+                className="dir-input"
               />
-              <button type="submit" disabled={searching || !query.trim()} className="primary-btn">
-                {searching ? 'Searching…' : 'Search'}
+              <button type="submit" disabled={busy === 'search' || !query.trim()} className="btn primary-btn">
+                {busy === 'search' ? 'Searching…' : 'Search'}
               </button>
             </form>
           </section>
         </div>
 
-        {error && <div className="error">{error}</div>}
-        {statusMsg && <div className="status">{statusMsg}</div>}
-        {indexStats && indexStats.error_count > 0 && (
-          <div className="status warn">
-            {indexStats.error_count} file(s) had errors during index (first few logged server-side).
-          </div>
+        {error && <div className="banner error">{error}</div>}
+        {statusMsg && <div className="banner status">{statusMsg}</div>}
+        {indexErrors > 0 && (
+          <div className="banner status warn">{indexErrors} file(s) had errors during index (first few logged server-side).</div>
         )}
 
         <section className="results-section">
           <h2>Results</h2>
           {results.length === 0 ? (
-            <div className="empty-state">
+            <div className="empty-state glass">
               <div className="empty-icon" aria-hidden="true" />
               <p>Point the telescope at a folder, then search in natural language.</p>
               <p className="empty-hint-sub">Index a directory first — matches appear here as glass cards.</p>
@@ -176,7 +169,7 @@ function App() {
           ) : (
             <div className="file-list">
               {results.map((file) => (
-                <div key={file.path} className="file-card">
+                <div key={file.path} className="file-card glass">
                   <div className="file-info">
                     <h3>{file.filename}</h3>
                     <div className="meta-row">
@@ -197,14 +190,14 @@ function App() {
                   <div className="file-actions">
                     <button
                       type="button"
-                      className="explain-btn"
+                      className="btn explain-btn"
                       onClick={() => handleExplain(file.path)}
-                      disabled={explainingPath === file.path}
+                      disabled={busy === file.path}
                     >
-                      {explainingPath === file.path ? 'Explaining…' : 'Explain'}
+                      {busy === file.path ? 'Explaining…' : 'Explain'}
                     </button>
-                    <button type="button" className="open-btn" onClick={() => handleOpen(file.path)}>Open</button>
-                    <button type="button" className="delete-btn" onClick={() => handleDelete(file.path)}>Trash</button>
+                    <button type="button" className="btn open-btn" onClick={() => handleOpen(file.path)}>Open</button>
+                    <button type="button" className="btn delete-btn" onClick={() => handleDelete(file.path)}>Trash</button>
                   </div>
                 </div>
               ))}
