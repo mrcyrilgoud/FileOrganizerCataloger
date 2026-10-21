@@ -3,26 +3,14 @@ import os
 from send2trash import send2trash
 
 
-def _trash(path, want_dir):
-    label = "Directory" if want_dir else "File"
+def trash_path(path):
+    """Move an existing file or directory to the system Trash."""
     try:
         if not os.path.exists(path):
-            raise FileNotFoundError("%s not found: %s" % (label, path))
-        if want_dir and not os.path.isdir(path):
-            raise NotADirectoryError("Path is not a directory: %s" % path)
-        if not want_dir and not os.path.isfile(path):
-            raise IsADirectoryError(
-                "Cannot delete directory: %s. Only files allowed." % path
-            )
+            raise FileNotFoundError("File not found: %s" % path)
+        if not (os.path.isfile(path) or os.path.isdir(path)):
+            raise ValueError("Path is not a file or directory: %s" % path)
         send2trash(path)
-        return True, "%s moved to trash successfully" % label
+        return True, "Path moved to trash successfully"
     except Exception as exc:
         return False, str(exc)
-
-
-def delete_file_safely(file_path):
-    return _trash(file_path, False)
-
-
-def delete_directory_safely(dir_path):
-    return _trash(dir_path, True)

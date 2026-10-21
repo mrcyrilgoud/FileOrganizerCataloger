@@ -123,21 +123,18 @@ class Indexer:
                 errors.append("%s: %s" % (item["path"], exc))
                 skipped += 1
         now = time.time()
-        rows = self._rows_from_batch(text_items, now, True)
-        rows.extend(self._rows_from_batch(label_items, now, False))
-        return rows, skipped, errors
+        return self._rows_from_batch(text_items + label_items, now), skipped, errors
 
-    def _rows_from_batch(self, items, now, excerpt_from_text):
+    def _rows_from_batch(self, items, now):
         if not items:
             return []
         embs = encode_texts([text for _item, text in items])
         rows = []
         for (item, text), emb in zip(items, embs):
-            excerpt = text[:MAX_EXCERPT_CHARS] if excerpt_from_text else text
             emb = np.asarray(emb, dtype=np.float32)
             rows.append({
                 "path": item["path"], "mtime": item["mtime"], "size": item["size"],
-                "mime": item["mime"], "text_excerpt": excerpt[:MAX_EXCERPT_CHARS],
+                "mime": item["mime"], "text_excerpt": text[:MAX_EXCERPT_CHARS],
                 "embedding": emb.tobytes(), "embedding_dim": int(emb.shape[0]),
                 "last_indexed": now,
             })

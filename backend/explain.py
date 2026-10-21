@@ -85,26 +85,7 @@ class FileExplainer:
         timeout = httpx.Timeout(connect=5.0, read=180.0, write=30.0, pool=5.0)
         try:
             with httpx.Client(timeout=timeout) as client:
-                try:
-                    client.get("%s/api/tags" % self.base_url)
-                except httpx.ConnectError as exc:
-                    _fail(
-                        "Ollama is not reachable at %s. "
-                        "Start Ollama and pull the Explain model (default: qwen3:4b-instruct)."
-                        % self.base_url,
-                        exc,
-                    )
-                except httpx.TimeoutException as exc:
-                    _fail("Ollama timed out at %s during health check." % self.base_url, exc)
-                try:
-                    resp = client.post("%s/api/generate" % self.base_url, json=payload)
-                except httpx.TimeoutException as exc:
-                    _fail(
-                        "Ollama generate timed out after 180s using model %s. "
-                        "Retry once the model is warm, or check `ollama ps`."
-                        % self.model,
-                        exc,
-                    )
+                resp = client.post("%s/api/generate" % self.base_url, json=payload)
                 if resp.status_code != 200:
                     _fail("Ollama returned HTTP %s: %s" % (resp.status_code, resp.text[:300]))
                 text = (resp.json().get("response") or "").strip()
@@ -113,5 +94,18 @@ class FileExplainer:
                 return text
         except ExplainError:
             raise
+        except httpx.ConnectError as exc:
+            _fail(
+                "Ollama is not reachable at %s. "
+                "Start Ollama and pull the Explain model (default: qwen3:4b-instruct)."
+                % self.base_url,
+                exc,
+            )
+        except httpx.TimeoutException as exc:
+            _fail(
+                "Ollama generate timed out after 180s using model %s. "
+                "Retry once the model is warm, or check `ollama ps`." % self.model,
+                exc,
+            )
         except httpx.HTTPError as exc:
             _fail("Ollama request failed at %s: %s" % (self.base_url, exc), exc)

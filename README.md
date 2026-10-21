@@ -1,41 +1,133 @@
 # Sonic Telescope
 
-**Local semantic file library** — index once, search in plain English, explain why a file matters. All AI stays on your machine.
+Sonic Telescope is a local semantic file library for macOS. Index a directory once, search it using natural language, and inspect why a result may be relevant—all from a lightweight React interface.
 
-> Formerly framed as an importance scorer. The product spine is now a **semantic library** (Phase 1), with cleanup and organize agents as later phases. See [REDESIGN.md](./REDESIGN.md).
+The application is currently focused on its Phase 1 workflow:
 
-## What it does (Phase 1)
+**Index → Search → Explain**
 
-1. **Index** a folder — extract bounded text, embed with SentenceTransformers (`all-MiniLM-L6-v2`). Images default to a filename label; set `SONIC_ENABLE_CLIP=1` to enrich labels with CLIP (`clip-ViT-B-32`).
-2. **Search** with natural language — cosine similarity over your local index.
-3. **Explain** — Ollama (`qwen3:4b-instruct` on `127.0.0.1`) narrates why a hit might matter, using metadata + a short excerpt only.
-4. Open / trash remain secondary actions (confirm before delete).
+## Features
 
-**Phases 2–3 (stubs):** cleanup proposals and organizer move plans — see `backend/agent.py` and `backend/organize.py`.
+- Indexes supported files recursively and skips unchanged files on subsequent runs.
+- Searches indexed content with SentenceTransformers embeddings and cosine similarity.
+- Displays ranked results with filenames, paths, MIME types, sizes, scores, and excerpts.
+- Optionally classifies images with CLIP when `SONIC_ENABLE_CLIP` is enabled; otherwise images are indexed by filename.
+- Generates grounded explanations through Ollama on `127.0.0.1`, using only file metadata and a short stored excerpt.
+- Opens files in the default macOS application and moves files to the system Trash after confirmation.
 
-## Privacy
+Cleanup proposals and organizer move plans are planned for later phases; their current modules are stubs. See [REDESIGN.md](REDESIGN.md) for the product direction and [docs/CODE_WALKTHROUGH.md](docs/CODE_WALKTHROUGH.md) for implementation details.
 
-- Processing is **local**. No cloud LLM APIs.
-- Ollama is called only on loopback (`http://127.0.0.1:11434`).
-- Full large files are never sent to the model — only short excerpts + metadata.
-- Index lives under `~/.sonic-telescope/index.db`.
+## Privacy and local data
 
-## Stack
-Backend FastAPI, frontend React+Vite, embeddings SentenceTransformers+CLIP, explain via Ollama qwen3:4b-instruct, store SQLite.
+File indexing, embeddings, search, and the SQLite index run locally. Sonic Telescope does not use cloud LLM or hosted vector-search APIs. Explanations call Ollama only through its loopback endpoint, and send the model a basename, path, MIME type, size, modification time, and at most a short excerpt—not the full file.
 
-## Prerequisites
-- Python 3.8+ (this Mac currently has models on python3.8; plain python3 is 3.13)
-- Node.js
-- Optional: Ollama with `qwen3:4b-instruct` (default Explain); `qwen3:8b` / `llama3.1:8b` also work
+The text embedding model is downloaded by SentenceTransformers the first time it is needed. The optional CLIP model is downloaded only when image classification is enabled. Local index data is stored at:
 
-## Setup
-Backend: cd backend, install requirements with the Python that has sentence-transformers (on this Mac: python3.8 -m pip install -r requirements.txt), then python3.8 main.py (port 8000).
-Frontend: cd frontend, install deps, run Vite dev server, open localhost:5173.
+```text
+~/.sonic-telescope/index.db
+```
 
-## API Phase 1
-GET /health | POST /index | POST /search | POST /explain | POST /browse | POST /open | POST /delete
+## Requirements
 
-## Smoke test
-Hit /health, /index a small folder, /search a query, /explain a path when Ollama is up.
+- macOS (the folder picker, file opening, and Trash actions use macOS system behavior)
+- Python 3.10 or newer
+- Node.js 20.19+ or 22.12+
+- Optional: [Ollama](https://ollama.com/) for the Explain action
 
-See REDESIGN.md for architecture. Local only; do not commit unless asked.
+The default explanation model is `qwen3:4b-instruct`. Install it with:
+
+```bash
+ollama pull qwen3:4b-instruct
+```
+
+You can choose another installed model with `SONIC_EXPLAIN_MODEL` or the API's optional `model` field.
+
+## Installation
+
+From the repository root, create a Python environment and install the backend dependencies:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+Install the frontend dependencies in a second terminal:
+
+```bash
+cd frontend
+npm install
+```
+
+## Run locally
+
+Start the API from the `backend` directory:
+
+```bash
+source .venv/bin/activate
+python main.py
+```
+
+The API listens on `http://localhost:8000`.
+
+Start the Vite development server in another terminal:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open the URL printed by Vite, normally `http://localhost:5173`. Choose a directory, select **Index**, then enter a natural-language query. The first indexing or search operation may take longer while the embedding model loads.
+
+## API overview
+
+The FastAPI service exposes:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Report service status, indexed-file count, and explanation model |
+| `POST /index` | Index a directory: `{"directory": "/path/to/folder"}` |
+| `POST /search` | Search the index: `{"query": "tax documents", "limit": 20}` |
+| `POST /explain` | Explain a file: `{"path": "/path/to/file"}` |
+| `POST /browse` | Open the macOS folder picker |
+| `POST /open` | Open a file with the default macOS application |
+| `POST /delete` | Move a file to the system Trash |
+
+Interactive API documentation is available at `http://localhost:8000/docs` while the backend is running.
+
+## Indexing boundaries
+
+To keep indexing predictable, the current implementation:
+
+- reads at most 4,000 characters from each text file;
+- stores at most an 800-character excerpt;
+- ignores empty files and files larger than 8 MiB;
+- skips hidden directories and common generated directories such as `.git`, `node_modules`, `dist`, and `build`;
+- indexes unknown file types using a filename label.
+
+## Development checks
+
+Run the project checks before submitting changes:
+
+```bash
+cd /path/to/FileOrganizerCataloger
+python3 -m compileall -q backend
+
+cd frontend
+npm run lint
+npm run build
+```
+
+## Project structure
+
+```text
+backend/                 FastAPI service, indexer, embeddings, search, and SQLite store
+frontend/                React + Vite interface
+docs/CODE_WALKTHROUGH.md Detailed implementation walkthrough
+REDESIGN.md              Product direction and future phases
+```
+
+## Status
+
+Sonic Telescope is an active Phase 1 project. The current release is intended for local development and experimentation; cleanup and organization automation are not yet implemented.

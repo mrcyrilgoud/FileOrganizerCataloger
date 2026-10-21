@@ -31,8 +31,8 @@ class IndexStore:
     """Local SQLite store for file metadata + embedding blobs."""
 
     def __init__(self, db_path: Optional[Path] = None):
-        APP_DIR.mkdir(parents=True, exist_ok=True)
         self.db_path = Path(db_path) if db_path else DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:

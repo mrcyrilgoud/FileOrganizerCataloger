@@ -18,6 +18,7 @@ function App() {
   const [results, setResults] = useState([]);
   const [indexErrors, setIndexErrors] = useState(0);
   const [explanations, setExplanations] = useState({});
+  const [explainingPaths, setExplainingPaths] = useState(() => new Set());
   const [busy, setBusy] = useState('');
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
@@ -53,6 +54,7 @@ function App() {
     if (!query.trim()) return;
     setBusy('search');
     setError(null);
+    setStatusMsg(null);
     try {
       const { data } = await post('/search', { query: query.trim(), limit: 20 });
       const hits = data.results || [];
@@ -66,15 +68,18 @@ function App() {
   };
 
   const handleExplain = async (path) => {
-    setBusy(path);
-    setError(null);
+    setExplainingPaths((prev) => new Set(prev).add(path));
     try {
       const { data } = await post('/explain', { path });
       setExplanations((prev) => ({ ...prev, [path]: data.explanation }));
     } catch (err) {
       setExplanations((prev) => ({ ...prev, [path]: `Explain unavailable: ${apiDetail(err, err.message)}` }));
     } finally {
-      setBusy('');
+      setExplainingPaths((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        return next;
+      });
     }
   };
 
@@ -192,9 +197,9 @@ function App() {
                       type="button"
                       className="btn explain-btn"
                       onClick={() => handleExplain(file.path)}
-                      disabled={busy === file.path}
+                      disabled={explainingPaths.has(file.path)}
                     >
-                      {busy === file.path ? 'Explaining…' : 'Explain'}
+                      {explainingPaths.has(file.path) ? 'Explaining…' : 'Explain'}
                     </button>
                     <button type="button" className="btn open-btn" onClick={() => handleOpen(file.path)}>Open</button>
                     <button type="button" className="btn delete-btn" onClick={() => handleDelete(file.path)}>Trash</button>

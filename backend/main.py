@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from actions import delete_directory_safely, delete_file_safely
+from actions import trash_path
 from explain import ExplainError, FileExplainer
 from indexer import Indexer
 from search import SemanticSearch
@@ -19,7 +19,8 @@ from search import SemanticSearch
 app = FastAPI(title="Sonic Telescope API", description="Local semantic file library (Phase 1).")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"], allow_headers=["*"],
 )
 searcher = SemanticSearch()
 indexer = Indexer(store=searcher.store, on_change=searcher.invalidate)
@@ -97,12 +98,18 @@ def explain_file(req: ExplainRequest):
 
 @app.post("/delete")
 def delete_item(req: DeleteRequest):
-    fn = delete_directory_safely if os.path.isdir(req.file_path) else delete_file_safely
-    success, msg = fn(req.file_path)
+    path = os.path.abspath(os.path.expanduser(req.file_path))
+    is_directory = os.path.isdir(path)
+    success, msg = trash_path(path)
     if not success:
         _http(400, msg)
     try:
-        indexer.store.delete(req.file_path)
+        if is_directory:
+            for indexed_path in indexer.store.meta_map():
+                if os.path.commonpath((path, indexed_path)) == path:
+                    indexer.store.delete(indexed_path)
+        else:
+            indexer.store.delete(path)
         searcher.invalidate()
     except Exception:
         pass
@@ -132,13 +139,17 @@ def browse_directory_process():
     p.start()
     try:
         result = queue.get(timeout=60)
-        p.join()
+        p.join(timeout=1)
         return {"path": result or ""}
     except Empty:
-        p.terminate()
         return {"path": ""}
     except Exception:
         return {"path": ""}
+    finally:
+        if p.is_alive():
+            p.terminate()
+        p.join(timeout=1)
+        queue.close()
 
 
 @app.post("/browse")
@@ -151,11 +162,11 @@ def open_file(req: OpenRequest):
     if not os.path.exists(req.file_path):
         _http(404, "File not found")
     try:
-        subprocess.call(["open", req.file_path])
+        subprocess.run(["open", req.file_path], check=True)
         return {"status": "opened", "path": req.file_path}
     except Exception as exc:  # noqa: BLE001
         _http(500, "Failed to open file: %s" % exc, exc)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
