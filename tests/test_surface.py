@@ -241,6 +241,34 @@ class SurfaceTests(unittest.TestCase):
                 trash.assert_called_once_with(str(indexed.resolve()))
                 self.assertIsNone(db.get(str(indexed.resolve())))
 
+    def test_open_action_only_opens_indexed_regular_files(self):
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            indexed = root / "indexed.txt"
+            unindexed = root / "unindexed.txt"
+            folder = root / "folder"
+            indexed.write_text("indexed", encoding="utf-8")
+            unindexed.write_text("unindexed", encoding="utf-8")
+            folder.mkdir()
+            db = IndexStore(db_path=root / "index.db")
+            db.upsert_many([{
+                "path": str(indexed.resolve()), "mtime": 1.0, "size": 7,
+                "mime": "text/plain", "text_excerpt": "indexed",
+                "embedding": b"\x00\x00\x80?", "embedding_dim": 1,
+                "last_indexed": 1.0,
+            }])
+            with patch("main.indexer.store", db), patch("main.subprocess.run") as open_file:
+                client = TestClient(app)
+                self.assertEqual(client.post("/open", json={"file_path": str(unindexed)}).status_code, 404)
+                self.assertEqual(client.post("/open", json={"file_path": str(folder)}).status_code, 404)
+                response = client.post("/open", json={"file_path": str(indexed)})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["path"], str(indexed.resolve()))
+                open_file.assert_called_once_with(["open", str(indexed.resolve())], check=True)
+
     def test_delete_reports_trash_success_when_catalog_cleanup_fails(self):
         from fastapi.testclient import TestClient
         from unittest.mock import patch
