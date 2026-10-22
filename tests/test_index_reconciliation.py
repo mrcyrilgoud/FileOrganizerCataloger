@@ -43,8 +43,9 @@ class IndexReconciliationTests(unittest.TestCase):
                 indexer.index_directory(str(root_a))
                 indexer.index_directory(str(root_b))
 
-            searcher._ensure_cache()
-            self.assertIsNotNone(searcher._matrix)
+            with patch("search.encode_texts", side_effect=self._encode):
+                before = searcher.search("file", limit=20)
+            self.assertEqual(len(before), 3)
             deleted.unlink()
             moved.rename(base / "moved.txt")
 
@@ -56,7 +57,9 @@ class IndexReconciliationTests(unittest.TestCase):
             self.assertIsNone(store.get(str(deleted.resolve())))
             self.assertIsNone(store.get(str(moved.resolve())))
             self.assertIsNotNone(store.get(str(other_root_file.resolve())))
-            self.assertIsNone(searcher._matrix)
+            with patch("search.encode_texts", side_effect=self._encode):
+                after = searcher.search("file", limit=20)
+            self.assertEqual([hit["path"] for hit in after], [str(other_root_file.resolve())])
 
     def test_preserves_row_when_path_stat_is_ambiguous(self):
         with tempfile.TemporaryDirectory() as tmp:
