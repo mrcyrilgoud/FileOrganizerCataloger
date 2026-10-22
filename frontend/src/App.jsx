@@ -2,7 +2,7 @@ import { useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_URL = 'http://localhost:8000';
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 const apiDetail = (err, fallback) => err.response?.data?.detail || err.message || fallback;
 const post = (path, body) => axios.post(`${API_URL}${path}`, body);

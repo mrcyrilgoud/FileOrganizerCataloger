@@ -21,11 +21,13 @@ from index_store import EmbeddingCompatibilityError
 from indexer import IndexCancelled, Indexer
 from models import TEXT_MODEL_NAME
 from search import SemanticSearch
+from settings import Settings
 
 app = FastAPI(title="Sonic Telescope API", description="Local semantic file library (Phase 1).")
+settings = Settings.from_env()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=list(settings.cors_origins),
     allow_methods=["*"], allow_headers=["*"],
 )
 searcher = SemanticSearch()
@@ -295,4 +297,4 @@ def open_file(req: OpenRequest):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host=settings.host, port=settings.port)
