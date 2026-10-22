@@ -29,6 +29,8 @@ test('first run is search-first, folder aware, and submits a trimmed local query
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Find files by meaning' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Add or refresh a folder' })).toBeVisible();
+  await expect(page.getByText('Search covers all indexed folders. Files stay on your device. First model use may download model files.')).toBeVisible();
   await expect(page.getByLabel('Folder to index')).toBeEditable();
   const query = page.getByLabel('Search query');
   const submit = page.getByRole('button', { name: 'Search' });
@@ -54,6 +56,41 @@ test('search errors explain the service problem instead of showing catalog setup
   await expect(page.getByRole('heading', { name: 'Search could not be completed' })).toBeVisible();
   await expect(page.getByText('Check the local service connection and try searching again.')).toBeVisible();
   await expect(page.getByText('Start with a folder')).toHaveCount(0);
+});
+
+test('result heading keeps the query that produced the visible results', async ({ page }) => {
+  await page.route('http://localhost:8000/**', async (route) => {
+    const { pathname } = new URL(route.request().url());
+    if (pathname === '/health') return route.fulfill(json({ status: 'ok', indexed_files: 2 }));
+    if (pathname === '/search') return route.fulfill(json({ count: 2, results }));
+    return route.fulfill(json({}));
+  });
+  await page.goto('/');
+  const query = page.getByLabel('Search query');
+  await query.fill('project plan');
+  await page.getByRole('button', { name: 'Search' }).click();
+  await expect(page.locator('.query-context')).toHaveText('for “project plan”');
+  await query.fill('travel receipts');
+  await expect(page.locator('.query-context')).toHaveText('for “project plan”');
+});
+
+test('indexing error details identify files the user needs to inspect', async ({ page }) => {
+  await page.route('http://localhost:8000/**', async (route) => {
+    const { pathname } = new URL(route.request().url());
+    if (pathname === '/health') return route.fulfill(json({ status: 'ok', indexed_files: 0 }));
+    if (pathname === '/index') return route.fulfill(json({ job_id: 'error-job', status: 'running', stage: 'scanning' }, 202));
+    if (pathname === '/jobs/error-job') return route.fulfill(json({
+      job_id: 'error-job', status: 'completed', stage: 'completed',
+      result: { indexed: 1, updated: 0, removed: 0, skipped: 1, total_in_store: 1, error_count: 1, errors: ['/tmp/private/notes.txt: Permission denied'] },
+    }));
+    return route.fulfill(json({}));
+  });
+  await page.goto('/');
+  await page.getByLabel('Folder to index').fill('/tmp/private');
+  await page.getByRole('button', { name: 'Index folder' }).click();
+  await expect(page.getByText('1 indexing issue occurred. Review affected paths; some files may be missing from search.')).toBeVisible();
+  await page.getByText('Show file details').click();
+  await expect(page.getByText('/tmp/private/notes.txt: Permission denied')).toBeVisible();
 });
 
 test('dismissing the native folder picker is a neutral no-op', async ({ page }) => {
@@ -299,12 +336,16 @@ test('offers a safe catalog reset after an embedding compatibility conflict', as
     }
     return route.fulfill(json({ job_id: 'reset-job', status: 'completed', result: { indexed: 1, updated: 0, removed: 0, skipped: 0, total_in_store: 1, error_count: 0 } }));
   });
-  page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/');
   await page.getByLabel('Folder to index').fill('/tmp/demo');
   await page.getByLabel('Search query').fill('old files');
   await page.getByRole('button', { name: 'Search' }).click();
   await expect(page.getByRole('alert')).toContainText('legacy embeddings');
+  await expect(page.getByText(/Clearing removes entries for every indexed folder/)).toBeVisible();
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain('other folders must be indexed again');
+    await dialog.accept();
+  });
   await page.getByRole('button', { name: 'Clear catalog and re-index this folder' }).click();
   await expect(page.getByText('Indexed 1 new · updated 0 · skipped 0 · removed 0 stale. Catalog total: 1.')).toBeVisible();
   expect(resetJobStarted).toBe(true);

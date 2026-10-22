@@ -67,7 +67,7 @@ function SourcePanel({ directory, setDirectory, onBrowse, onIndex, isIndexing, i
     <section className="source-panel" aria-labelledby="source-title">
       <div className="source-icon"><Icon name="folder" /></div>
       <div className="source-content">
-        <div className="source-heading"><h2 id="source-title">Search in a folder</h2><span className="local-label"><span className={`status-dot ${apiStatus === 'connected' ? 'is-connected' : ''}`} /> {apiStatus === 'connected' ? 'Local index' : 'Local catalog'}</span></div>
+        <div className="source-heading"><h2 id="source-title">Add or refresh a folder</h2><span className="local-label"><span className={`status-dot ${apiStatus === 'connected' ? 'is-connected' : ''}`} /> {apiStatus === 'connected' ? 'Local index' : 'Local catalog'}</span></div>
         <div className="source-controls">
           <label className="visually-hidden" htmlFor="folder-path">Folder to index</label>
           <input id="folder-path" aria-label="Folder to index" value={directory} onChange={(event) => setDirectory(event.target.value)} placeholder="Choose a folder to get started" title={directory || undefined} disabled={isIndexing} />
@@ -82,7 +82,7 @@ function SourcePanel({ directory, setDirectory, onBrowse, onIndex, isIndexing, i
             {progress == null && <div className="progress-track indeterminate"><span /></div>}
           </div>
         )}
-        <p className="source-footnote">Files and search stay on your device. First model use may download model files.</p>
+        <p className="source-footnote">Search covers all indexed folders. Files stay on your device. First model use may download model files.</p>
         <span className="service-state visually-hidden" aria-live="polite">{apiStatus === 'connected' ? 'Local API connected' : apiStatus === 'unavailable' ? 'Local API unavailable' : ''}</span>
       </div>
     </section>
@@ -172,9 +172,11 @@ function FileDetailPanel({ file, explanation, explaining, onExplain, onOpen, onT
 function App() {
   const [directory, setDirectory] = useState('');
   const [query, setQuery] = useState('');
+  const [searchedQuery, setSearchedQuery] = useState('');
   const [results, setResults] = useState([]);
   const [selectedPath, setSelectedPath] = useState(null);
   const [indexErrors, setIndexErrors] = useState(0);
+  const [indexErrorDetails, setIndexErrorDetails] = useState([]);
   const [explanations, setExplanations] = useState({});
   const [explainingPaths, setExplainingPaths] = useState(() => new Set());
   const [isIndexing, setIsIndexing] = useState(false);
@@ -244,7 +246,7 @@ function App() {
     if (!directory || isIndexing) return;
     const staleBeforeIndex = resultsAreStale;
     setIsIndexing(true);
-    setError(null); setStatusMsg(null); setSearchFailed(false); setIndexErrors(0);
+    setError(null); setStatusMsg(null); setSearchFailed(false); setIndexErrors(0); setIndexErrorDetails([]);
     setResultsAreStale(results.length > 0);
     try {
       const { data: started } = await post('/index', { directory });
@@ -260,6 +262,7 @@ function App() {
         indexVersion.current += 1;
         setResultsAreStale(lastSearchIndexVersion.current != null && lastSearchIndexVersion.current !== indexVersion.current);
         setIndexErrors(data.error_count || 0);
+        setIndexErrorDetails(Array.isArray(data.errors) ? data.errors : []);
         setIndexedCount(data.total_in_store ?? null);
         setStatusMsg(`Indexed ${data.indexed} new · updated ${data.updated} · skipped ${data.skipped} · removed ${data.removed || 0} stale. Catalog total: ${data.total_in_store}.`);
         setIndexJob(null);
@@ -280,12 +283,12 @@ function App() {
 
   const handleResetCatalog = async () => {
     if (isIndexing) return;
-    const confirmed = window.confirm(`Clear the local catalog and embeddings? Files on disk will stay unchanged.${directory ? ' The selected folder will be re-indexed now.' : ''}`);
+    const confirmed = window.confirm(`Clear catalog entries for all indexed folders? Files on disk will stay unchanged.${directory ? ' The selected folder will be re-indexed now; other folders must be indexed again.' : ' All folders must be indexed again.'}`);
     if (!confirmed) return;
     try {
       await post('/index/reset', {});
       previousFocus.current = document.getElementById('folder-path');
-      setResults([]); setSelectedPath(null); setResultsAreStale(false); setExplanations({}); setIndexedCount(0); setCatalogNeedsReset(false); setError(null);
+      setResults([]); setSelectedPath(null); setSearchedQuery(''); setResultsAreStale(false); setExplanations({}); setIndexedCount(0); setCatalogNeedsReset(false); setError(null);
       setStatusMsg(directory ? 'Catalog cleared. Re-indexing the selected folder. Files on disk were not changed.' : 'Catalog cleared. Files on disk were not changed.');
       if (directory) await handleIndex();
     } catch (err) { setError(apiDetail(err, 'Could not clear the catalog')); }
@@ -306,6 +309,7 @@ function App() {
       const { data } = await post('/search', { query: query.trim(), limit: 20 });
       const hits = data.results || [];
       setResults(hits); setSelectedPath(null);
+      setSearchedQuery(query.trim());
       lastSearchIndexVersion.current = versionAtStart;
       setResultsAreStale(versionAtStart !== indexVersion.current);
       setStatusMsg(hits.length ? `Found ${data.count} result${data.count === 1 ? '' : 's'}.` : 'No matches in this catalog. Index a folder or try different words.');
@@ -382,11 +386,11 @@ function App() {
             <SourcePanel directory={directory} setDirectory={setDirectory} onBrowse={handleBrowse} onIndex={handleIndex} isIndexing={isIndexing} indexJob={indexJob} onCancel={handleCancelIndex} apiStatus={apiStatus} />
             <SearchBar query={query} setQuery={setQuery} onSearch={handleSearch} isSearching={isSearching} />
             {error && <div className="notice error-notice" role="alert"><Icon name="alert" /><span>{error}</span></div>}
-            {catalogNeedsReset && <div className="notice warning-notice" role="status" aria-live="polite"><Icon name="alert" /><div><strong>Catalog needs to be rebuilt</strong><p>Stored vectors cannot be compared safely with the active embedding model. Clearing the catalog leaves files on disk unchanged.</p><button type="button" className="button warning-button" onClick={handleResetCatalog} disabled={isIndexing}>{isIndexing ? 'Wait for indexing to finish' : 'Clear catalog and re-index this folder'}</button></div></div>}
+            {catalogNeedsReset && <div className="notice warning-notice" role="status" aria-live="polite"><Icon name="alert" /><div><strong>Catalog needs to be rebuilt</strong><p>Stored vectors cannot be compared safely with the active embedding model. Clearing removes entries for every indexed folder. The selected folder will be re-indexed; index other folders again afterward. Files on disk stay unchanged.</p><button type="button" className="button warning-button" onClick={handleResetCatalog} disabled={isIndexing}>{isIndexing ? 'Wait for indexing to finish' : 'Clear catalog and re-index this folder'}</button></div></div>}
             {statusMsg && <div className="notice success-notice" role="status" aria-live="polite" aria-atomic="true"><Icon name="check" /><span>{statusMsg}</span></div>}
             {actionNotice && <div className="notice success-notice action-notice action-result-notice" role="status"><Icon name="check" /><span>{actionNotice}</span></div>}
-            {indexErrors > 0 && <div className="notice warning-notice compact-notice" role="status"><Icon name="alert" /><span>{indexErrors} file{indexErrors === 1 ? '' : 's'} had indexing errors. The remaining files are available.</span></div>}
-            <div className="results-heading"><div><h2>Results</h2>{results.length > 0 && <span className="result-count">{results.length} found</span>}</div>{query && results.length > 0 && <span className="query-context">for “{query.trim()}”</span>}</div>
+            {indexErrors > 0 && <div className="notice warning-notice compact-notice" role="status"><Icon name="alert" /><div><span>{indexErrors} indexing issue{indexErrors === 1 ? '' : 's'} occurred. Review affected paths; some files may be missing from search.</span>{indexErrorDetails.length > 0 && <details><summary>Show file details</summary><ul>{indexErrorDetails.map((detail, index) => <li key={`${index}-${detail}`}>{detail}</li>)}</ul></details>}</div></div>}
+            <div className="results-heading"><div><h2>Results</h2>{results.length > 0 && <span className="result-count">{results.length} found</span>}</div>{searchedQuery && results.length > 0 && <span className="query-context">for “{searchedQuery}”</span>}</div>
             {resultsAreStale && results.length > 0 && <div className="stale-notice" role="status"><Icon name="alert" size={16} /><span>The catalog changed after this search. Search again to refresh.</span></div>}
             {results.length === 0 ? (
               <div className="empty-state">
