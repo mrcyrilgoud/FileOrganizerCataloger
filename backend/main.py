@@ -68,6 +68,8 @@ class IndexJobManager:
             with self._lock:
                 current = self._jobs.get(job_id)
                 if current is not None:
+                    if update.get("stage") == "saving" and current["cancel_event"].is_set():
+                        raise IndexCancelled("Indexing cancelled before catalog changes were saved")
                     current.update(update)
 
         try:

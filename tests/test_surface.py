@@ -82,6 +82,7 @@ class SurfaceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             started = threading.Event()
+            catalog_write_attempted = threading.Event()
             db = IndexStore(db_path=Path(tmp) / "index.db")
 
             def wait_for_cancel(directory, progress_callback, cancel_event):
@@ -89,8 +90,17 @@ class SurfaceTests(unittest.TestCase):
                 started.set()
                 while not cancel_event.wait(0.01):
                     pass
-                from indexer import IndexCancelled
-                raise IndexCancelled("cancelled")
+                # Simulate the narrow race where cancellation arrives after
+                # the indexer's last event check but before it reports saving.
+                try:
+                    progress_callback({"stage": "saving", "completed": 0, "total": 0})
+                except Exception as exc:
+                    from indexer import IndexCancelled
+                    if isinstance(exc, IndexCancelled):
+                        raise
+                    raise
+                catalog_write_attempted.set()
+                raise AssertionError("catalog writes must not start after cancellation")
 
             with patch("main.indexer.store", db), patch("main.indexer.index_directory", side_effect=wait_for_cancel):
                 client = TestClient(app)
@@ -109,6 +119,7 @@ class SurfaceTests(unittest.TestCase):
                         break
                     time.sleep(0.01)
                 self.assertEqual(state["status"], "cancelled")
+                self.assertFalse(catalog_write_attempted.is_set())
                 self.assertEqual(client.post(f"/jobs/{job_id}/cancel").status_code, 409)
                 self.assertEqual(client.get("/jobs/unknown").status_code, 404)
 

@@ -23,6 +23,8 @@ class SemanticSearch:
         query = (query or "").strip()
         if not query:
             return []
+        if not self.store.has_embeddings():
+            return []
         limit = max(1, min(int(limit or 20), 100))
         q = l2_normalize(np.asarray(encode_texts([query])[0], dtype=np.float32))
         if q is None:

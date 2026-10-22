@@ -31,6 +31,13 @@ class ObservedStore(IndexStore):
 
 
 class SearchStreamingTests(unittest.TestCase):
+    def test_empty_catalog_skips_query_embedding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = IndexStore(db_path=Path(tmp) / "empty.db")
+            searcher = SemanticSearch(store=store)
+            with patch("search.encode_texts", side_effect=AssertionError("model should not load")):
+                self.assertEqual(searcher.search("query"), [])
+
     def test_streams_bounded_batches_and_preserves_top_k_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = ObservedStore(Path(tmp) / "index.db")

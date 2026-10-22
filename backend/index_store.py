@@ -167,6 +167,12 @@ class IndexStore:
             row = conn.execute("SELECT COUNT(*) AS n FROM files").fetchone()
             return int(row["n"]) if row else 0
 
+    def has_embeddings(self) -> bool:
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM files WHERE embedding IS NOT NULL LIMIT 1"
+            ).fetchone() is not None
+
 
 class EmbeddingCompatibilityError(Exception):
     """Raised when stored vectors cannot safely be compared with this model."""

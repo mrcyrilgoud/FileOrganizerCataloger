@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 import numpy as np
 
@@ -17,6 +18,8 @@ CLIP_PROMPTS = (
     "other image",
 )
 _models = {}
+_model_lock = threading.Lock()
+_inference_lock = threading.Lock()
 
 
 def clip_enabled():
@@ -24,11 +27,12 @@ def clip_enabled():
 
 
 def _get_model(name):
-    if name not in _models:
-        from sentence_transformers import SentenceTransformer
+    with _model_lock:
+        if name not in _models:
+            from sentence_transformers import SentenceTransformer
 
-        _models[name] = SentenceTransformer(name)
-    return _models[name]
+            _models[name] = SentenceTransformer(name)
+        return _models[name]
 
 
 def get_text_model():
@@ -40,10 +44,11 @@ def get_image_model():
 
 
 def encode_texts(texts, batch_size=32):
-    embs = np.asarray(
-        get_text_model().encode(texts, batch_size=batch_size, show_progress_bar=False),
-        dtype=np.float32,
-    )
+    with _inference_lock:
+        embs = np.asarray(
+            get_text_model().encode(texts, batch_size=batch_size, show_progress_bar=False),
+            dtype=np.float32,
+        )
     return embs.reshape(1, -1) if embs.ndim == 1 else embs
 
 
@@ -61,9 +66,10 @@ def image_file_label(path):
         from PIL import Image
         from sentence_transformers import util
 
-        clip = get_image_model()
-        img_emb = clip.encode(Image.open(path).convert("RGB"))
-        sims = util.cos_sim(img_emb, clip.encode(list(CLIP_PROMPTS)))[0]
+        with _inference_lock:
+            clip = get_image_model()
+            img_emb = clip.encode(Image.open(path).convert("RGB"))
+            sims = util.cos_sim(img_emb, clip.encode(list(CLIP_PROMPTS)))[0]
         return "Image (%s): %s" % (CLIP_PROMPTS[int(sims.argmax())], name)
     except Exception:
         return fallback
