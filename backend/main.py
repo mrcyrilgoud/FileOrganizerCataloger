@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
@@ -98,22 +99,20 @@ def explain_file(req: ExplainRequest):
 
 @app.post("/delete")
 def delete_item(req: DeleteRequest):
-    path = os.path.abspath(os.path.expanduser(req.file_path))
-    is_directory = os.path.isdir(path)
+    path = str(Path(req.file_path).expanduser().resolve())
+    if not os.path.isfile(path):
+        _http(400, "Only indexed regular files can be moved to Trash")
+    if indexer.store.get(path) is None:
+        _http(404, "File is not in the index")
     success, msg = trash_path(path)
     if not success:
         _http(400, msg)
     try:
-        if is_directory:
-            for indexed_path in indexer.store.meta_map():
-                if os.path.commonpath((path, indexed_path)) == path:
-                    indexer.store.delete(indexed_path)
-        else:
-            indexer.store.delete(path)
+        indexer.store.delete(path)
         searcher.invalidate()
-    except Exception:
-        pass
-    return {"status": "deleted", "path": req.file_path}
+    except Exception as exc:  # noqa: BLE001
+        _http(500, "File moved to Trash, but index cleanup failed; search results may be stale", exc)
+    return {"status": "deleted", "path": path}
 
 
 def _tkinter_worker(queue):
@@ -159,11 +158,14 @@ def browse_directory():
 
 @app.post("/open")
 def open_file(req: OpenRequest):
-    if not os.path.exists(req.file_path):
+    path = str(Path(req.file_path).expanduser().resolve())
+    if not os.path.isfile(path):
         _http(404, "File not found")
+    if indexer.store.get(path) is None:
+        _http(404, "File is not in the index")
     try:
-        subprocess.run(["open", req.file_path], check=True)
-        return {"status": "opened", "path": req.file_path}
+        subprocess.run(["open", path], check=True)
+        return {"status": "opened", "path": path}
     except Exception as exc:  # noqa: BLE001
         _http(500, "Failed to open file: %s" % exc, exc)
 

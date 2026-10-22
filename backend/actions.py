@@ -14,3 +14,17 @@ def trash_path(path):
         return True, "Path moved to trash successfully"
     except Exception as exc:
         return False, str(exc)
+
+
+def delete_file_safely(path):
+    """Move an existing regular file to Trash; reject directories."""
+    if not os.path.isfile(path):
+        return False, "File not found or path is not a regular file: %s" % path
+    return trash_path(path)
+
+
+def delete_directory_safely(path):
+    """Move an existing directory to Trash."""
+    if not os.path.isdir(path):
+        return False, "Directory not found: %s" % path
+    return trash_path(path)
