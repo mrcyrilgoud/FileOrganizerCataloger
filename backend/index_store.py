@@ -71,6 +71,14 @@ class IndexStore:
         with self._connect() as conn:
             conn.execute("DELETE FROM files WHERE path = ?", (path,))
 
+    def delete_many(self, paths: Iterable[str]) -> int:
+        payload = [(path,) for path in paths]
+        if not payload:
+            return 0
+        with self._connect() as conn:
+            cursor = conn.executemany("DELETE FROM files WHERE path = ?", payload)
+            return cursor.rowcount
+
     def all_with_embeddings(self) -> List[Dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(

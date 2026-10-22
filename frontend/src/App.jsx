@@ -41,7 +41,7 @@ function App() {
     try {
       const { data } = await post('/index', { directory });
       setIndexErrors(data.error_count || 0);
-      setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
+      setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, removed ${data.removed || 0} stale, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
     } catch (err) {
       setError(apiDetail(err, 'Index failed'));
     } finally {

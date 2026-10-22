@@ -104,6 +104,7 @@ To keep indexing predictable, the current implementation:
 - stores at most an 800-character excerpt;
 - ignores empty files and files larger than 8 MiB;
 - skips hidden directories and common generated directories such as `.git`, `node_modules`, `dist`, and `build`;
+- removes catalog rows for paths confirmed missing beneath the selected directory after indexing; this never deletes files from disk;
 - indexes unknown file types using a filename label.
 
 ## Development checks

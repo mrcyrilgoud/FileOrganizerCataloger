@@ -145,8 +145,8 @@ sequenceDiagram
 3. Walk the tree while pruning hidden directories and `SKIP_DIR_NAMES` in-place.
 4. Skip hidden files, unchanged files, invalid files, and files that raise collection errors.
 5. Embed the remaining items in one batch.
-6. Upsert the generated rows, notify the searcher, and count new versus updated paths.
-7. Return UI-friendly statistics, truncating the returned error list to 50 while preserving the full error count.
+6. Upsert generated rows and remove indexed paths beneath the selected root only when the filesystem confirms they are missing. Permission and other ambiguous filesystem errors preserve rows.
+7. Invalidate the search cache when rows are added, updated, or removed, then return counts including removed rows. The error list is truncated to 50 while the full error count is preserved.
 
 `indexer.py:158-189` collects one file's metadata. It rejects stat failures, directories, empty files, and files over 8 MiB. It resolves the path, compares mtime within a 1 ms tolerance plus exact size, guesses MIME type, and assigns `text`, `image`, or `other`.
 
@@ -326,10 +326,10 @@ Clicking Explain then sends the selected path to FastAPI. The explainer reads on
 - The backend binds to loopback and allows the two local Vite development origins (`main.py` CORS configuration).
 - The default image representation is a filename label. CLIP is opt-in and categorizes against six fixed prompts.
 - Re-indexing detects changes by mtime and size, not by content hash.
-- Deleted or moved files are not globally pruned during a directory index; they remain in the SQLite store until `/delete` removes them.
+- Each successful directory index removes catalog rows for confirmed-missing paths beneath that selected root and reports the removal count. Indexing one root does not prune other roots, and reconciliation never deletes files from disk.
 - `POST /delete` uses an OS Trash operation, but its response status is named `deleted` for API compatibility.
 - Cleanup proposals and organizer move plans are stubs, not implemented features.
-- There are no tracked automated tests in this checkout. The practical verification commands are `python3 -m compileall backend` and, from `frontend`, `npm run lint` and `npm run build`.
+- Focused tests cover stale-index reconciliation without loading the embedding model and run with `python3 -m unittest discover -s tests -p 'test_index_reconciliation.py'`. Full test discovery currently fails during import because `tests/test_surface.py` imports action helpers that are not present in `backend/actions.py`. Frontend checks are `npm run lint` and `npm run build` from `frontend`.
 
 ## 7. Where to read next
 

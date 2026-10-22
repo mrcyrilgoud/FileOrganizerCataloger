@@ -62,20 +62,42 @@ class Indexer:
         rows, extra_skipped, extra_errors = self._embed_pending(pending)
         skipped += extra_skipped
         errors.extend(extra_errors)
+        stale_paths = self._find_missing_paths(str(root), meta)
         if rows:
             self.store.upsert_many(rows)
-            if self.on_change is not None:
-                self.on_change()
+        removed = self.store.delete_many(stale_paths)
+        if (rows or removed) and self.on_change is not None:
+            self.on_change()
         indexed = sum(1 for row in rows if row["path"] not in meta)
         return {
             "directory": str(root),
             "indexed": indexed,
             "updated": len(rows) - indexed,
+            "removed": removed,
             "skipped": skipped,
             "errors": errors[:50],
             "error_count": len(errors),
             "total_in_store": self.store.count(),
         }
+
+    @staticmethod
+    def _find_missing_paths(root: str, meta: Dict[str, Tuple[float, int]]) -> List[str]:
+        """Find indexed paths that are confirmed missing beneath the selected root."""
+        missing = []
+        for indexed_path in meta:
+            try:
+                if os.path.commonpath((root, indexed_path)) != root:
+                    continue
+            except ValueError:
+                continue
+            try:
+                os.stat(indexed_path)
+            except (FileNotFoundError, NotADirectoryError):
+                missing.append(indexed_path)
+            except OSError:
+                # Permission and other filesystem errors are ambiguous, so keep the row.
+                continue
+        return missing
 
     def _collect_pending(self, path: Path, meta: Dict[str, Tuple[float, int]]):
         try:
