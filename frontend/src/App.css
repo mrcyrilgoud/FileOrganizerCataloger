@@ -217,6 +217,12 @@
 .dir-input::placeholder { color: var(--text-dim); }
 .dir-input:focus { border-color: var(--glass-border-cyan); box-shadow: 0 0 0 3px var(--cyan-soft); }
 
+.btn:focus-visible,
+.dir-input:focus-visible {
+  outline: 3px solid #67e8f9;
+  outline-offset: 3px;
+}
+
 .btn {
   padding: 10px 16px;
   border-radius: var(--radius-sm);
@@ -302,6 +308,12 @@
   color: #fde68a;
   background: rgba(251, 191, 36, 0.14);
   border-color: rgba(251, 191, 36, 0.4);
+}
+
+.stale-results {
+  margin: 0 0 12px;
+  color: #fde68a;
+  font-size: 0.9rem;
 }
 
 .results-section { margin-top: 8px; }

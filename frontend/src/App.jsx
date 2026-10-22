@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import axios from 'axios';
 import './App.css';
 
@@ -19,11 +19,14 @@ function App() {
   const [indexErrors, setIndexErrors] = useState(0);
   const [explanations, setExplanations] = useState({});
   const [explainingPaths, setExplainingPaths] = useState(() => new Set());
-  const [busy, setBusy] = useState('');
+  const [isIndexing, setIsIndexing] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
   const [indexJob, setIndexJob] = useState(null);
   const [catalogNeedsReset, setCatalogNeedsReset] = useState(false);
+  const [resultsAreStale, setResultsAreStale] = useState(false);
+  const indexVersion = useRef(0);
 
   const pause = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -38,10 +41,11 @@ function App() {
 
   const handleIndex = async () => {
     if (!directory) return;
-    setBusy('index');
+    setIsIndexing(true);
     setError(null);
     setStatusMsg(null);
     setIndexErrors(0);
+    setResultsAreStale(results.length > 0);
     try {
       const { data: started } = await post('/index', { directory });
       setIndexJob(started);
@@ -54,6 +58,8 @@ function App() {
       }
       if (job.status === 'completed') {
         const data = job.result;
+        indexVersion.current += 1;
+        setResultsAreStale(true);
         setIndexErrors(data.error_count || 0);
         setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, removed ${data.removed || 0} stale, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
         setIndexJob(null);
@@ -69,7 +75,7 @@ function App() {
       setCatalogNeedsReset(err.response?.status === 409 && /embedding|index profile/i.test(message));
       setIndexJob(null);
     } finally {
-      setBusy('');
+      setIsIndexing(false);
     }
   };
 
@@ -81,6 +87,7 @@ function App() {
     try {
       await post('/index/reset', {});
       setResults([]);
+      setResultsAreStale(false);
       setExplanations({});
       setCatalogNeedsReset(false);
       setError(null);
@@ -104,20 +111,22 @@ function App() {
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!query.trim()) return;
-    setBusy('search');
+    setIsSearching(true);
     setError(null);
     setStatusMsg(null);
+    const versionAtStart = indexVersion.current;
     try {
       const { data } = await post('/search', { query: query.trim(), limit: 20 });
       const hits = data.results || [];
       setResults(hits);
+      setResultsAreStale(versionAtStart !== indexVersion.current);
       setStatusMsg(hits.length ? `Found ${data.count} result(s).` : 'No matches. Index a directory first, or try a different query.');
     } catch (err) {
       const message = apiDetail(err, 'Search failed');
       setError(message);
       setCatalogNeedsReset(err.response?.status === 409 && /embedding|index profile/i.test(message));
     } finally {
-      setBusy('');
+      setIsSearching(false);
     }
   };
 
@@ -177,6 +186,7 @@ function App() {
             <div className="controls">
               <input
                 type="text"
+                aria-label="Folder to index"
                 placeholder="/Users/you/Documents..."
                 value={directory}
                 onChange={(e) => setDirectory(e.target.value)}
@@ -186,16 +196,16 @@ function App() {
               <button
                 type="button"
                 onClick={handleIndex}
-                disabled={busy === 'index' || !directory}
+                disabled={isIndexing || !directory}
                 className="btn primary-btn"
               >
-                {busy === 'index' ? `${indexJob?.stage === 'embedding' ? 'Embedding' : 'Indexing'}…` : 'Index'}
+                {isIndexing ? `${indexJob?.stage === 'embedding' ? 'Embedding' : 'Indexing'}…` : 'Index'}
               </button>
-              {busy === 'index' && indexJob?.status !== 'cancelling' && indexJob?.stage !== 'saving' && (
+              {isIndexing && indexJob?.status !== 'cancelling' && indexJob?.stage !== 'saving' && (
                 <button type="button" onClick={handleCancelIndex} className="btn">Cancel</button>
               )}
             </div>
-            {busy === 'index' && indexJob && (
+            {isIndexing && indexJob && (
               <p className="job-progress" role="status">
                 {indexJob.stage === 'embedding' && indexJob.total != null
                   ? `Embedding ${indexJob.completed} of ${indexJob.total} files`
@@ -209,32 +219,36 @@ function App() {
             <form className="controls" onSubmit={handleSearch}>
               <input
                 type="text"
+                aria-label="Search query"
                 placeholder='e.g. "tax docs from last year" or "passport photos"'
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="dir-input"
               />
-              <button type="submit" disabled={busy === 'search' || !query.trim()} className="btn primary-btn">
-                {busy === 'search' ? 'Searching…' : 'Search'}
+              <button type="submit" disabled={isSearching || !query.trim()} className="btn primary-btn">
+                {isSearching ? 'Searching…' : 'Search'}
               </button>
             </form>
           </section>
         </div>
 
-        {error && <div className="banner error">{error}</div>}
+        {error && <div className="banner error" role="alert" aria-live="assertive">{error}</div>}
         {catalogNeedsReset && (
           <div className="banner status warn">
             <p>The stored vectors cannot be compared safely with the active embedding model.</p>
             <button type="button" className="btn" onClick={handleResetCatalog}>Clear catalog and re-index selected folder</button>
           </div>
         )}
-        {statusMsg && <div className="banner status">{statusMsg}</div>}
+        {statusMsg && <div className="banner status" role="status" aria-live="polite" aria-atomic="true">{statusMsg}</div>}
         {indexErrors > 0 && (
           <div className="banner status warn">{indexErrors} file(s) had errors during index (first few logged server-side).</div>
         )}
 
         <section className="results-section">
           <h2>Results</h2>
+          {resultsAreStale && results.length > 0 && (
+            <p className="stale-results" role="status">These results are from before the latest indexing run. Search again to refresh them.</p>
+          )}
           {results.length === 0 ? (
             <div className="empty-state glass">
               <div className="empty-icon" aria-hidden="true" />
