@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import numpy as np
 
 from index_store import IndexStore
-from models import encode_texts, l2_normalize
+from models import TEXT_MODEL_NAME, encode_texts, l2_normalize
 
 
 class SemanticSearch:
@@ -27,6 +27,7 @@ class SemanticSearch:
         q = l2_normalize(np.asarray(encode_texts([query])[0], dtype=np.float32))
         if q is None:
             return []
+        self.store.assert_embedding_profile(TEXT_MODEL_NAME, q.shape[0])
         best = []
         for batch in self.store.iter_embedding_batches():
             vecs, meta = [], []

@@ -50,6 +50,10 @@ class IndexStore:
                 "last_indexed REAL NOT NULL)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS index_metadata ("
+                "key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
 
     def get(self, path: str) -> Optional[Dict[str, Any]]:
         with closing(self._connect()) as conn, conn:
@@ -61,12 +65,69 @@ class IndexStore:
             rows = conn.execute("SELECT path, mtime, size FROM files").fetchall()
         return {r["path"]: (float(r["mtime"]), int(r["size"])) for r in rows}
 
-    def upsert_many(self, rows: Iterable[Dict[str, Any]]) -> None:
+    def upsert_many(self, rows: Iterable[Dict[str, Any]], embedding_model: Optional[str] = None) -> None:
+        rows = list(rows)
         payload = [tuple(row[k] for k in _KEYS) for row in rows]
         if not payload:
             return
         with closing(self._connect()) as conn, conn:
+            if embedding_model is not None:
+                dimensions = {int(row["embedding_dim"]) for row in rows}
+                if len(dimensions) != 1:
+                    raise ValueError("A single index update must use one embedding dimension")
+                dimension = dimensions.pop()
+                self._assert_profile(conn, embedding_model, dimension)
             conn.executemany(_UPSERT_SQL, payload)
+            if embedding_model is not None:
+                conn.executemany(
+                    "INSERT INTO index_metadata(key,value) VALUES (?,?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (("embedding_model", embedding_model), ("embedding_dimension", str(dimension))),
+                )
+
+    def _assert_profile(self, conn, model: str, dimension: Optional[int] = None) -> None:
+        rows_exist = conn.execute(
+            "SELECT 1 FROM files WHERE embedding IS NOT NULL LIMIT 1"
+        ).fetchone() is not None
+        if not rows_exist:
+            return
+        profile = dict(conn.execute(
+            "SELECT key, value FROM index_metadata WHERE key IN ('embedding_model','embedding_dimension')"
+        ).fetchall())
+        stored_model = profile.get("embedding_model")
+        stored_dimension = profile.get("embedding_dimension")
+        if not stored_model or not stored_dimension:
+            raise EmbeddingCompatibilityError(
+                "The index contains legacy embeddings without a verified model profile. "
+                "Clear the catalog and re-index folders to continue."
+            )
+        if stored_model != model or (dimension is not None and int(stored_dimension) != dimension):
+            raise EmbeddingCompatibilityError(
+                "The index uses embedding profile %s (%s dimensions), but this app uses %s%s. "
+                "Clear the catalog and re-index folders to continue."
+                % (
+                    stored_model, stored_dimension, model,
+                    (" (%s dimensions)" % dimension) if dimension is not None else "",
+                )
+            )
+
+    def assert_embedding_profile(self, model: str, dimension: Optional[int] = None) -> None:
+        with closing(self._connect()) as conn:
+            self._assert_profile(conn, model, dimension)
+
+    def embedding_profile(self) -> Dict[str, str]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM index_metadata WHERE key IN ('embedding_model','embedding_dimension')"
+            ).fetchall()
+            return dict(rows)
+
+    def clear_all(self) -> int:
+        with closing(self._connect()) as conn, conn:
+            count = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            conn.execute("DELETE FROM files")
+            conn.execute("DELETE FROM index_metadata")
+            return int(count)
 
     def delete(self, path: str) -> None:
         with closing(self._connect()) as conn, conn:
@@ -105,3 +166,7 @@ class IndexStore:
         with closing(self._connect()) as conn, conn:
             row = conn.execute("SELECT COUNT(*) AS n FROM files").fetchone()
             return int(row["n"]) if row else 0
+
+
+class EmbeddingCompatibilityError(Exception):
+    """Raised when stored vectors cannot safely be compared with this model."""

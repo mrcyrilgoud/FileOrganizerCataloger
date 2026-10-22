@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from index_store import IndexStore  # noqa: E402
+from models import TEXT_MODEL_NAME  # noqa: E402
 from search import SemanticSearch  # noqa: E402
 
 
@@ -42,7 +43,7 @@ class SearchStreamingTests(unittest.TestCase):
                     "text_excerpt": "item", "embedding": vector.tobytes(),
                     "embedding_dim": 2, "last_indexed": 1.0,
                 })
-            store.upsert_many(rows)
+            store.upsert_many(rows, embedding_model=TEXT_MODEL_NAME)
             searcher = SemanticSearch(store=store)
 
             with patch("search.encode_texts", return_value=np.asarray([[1.0, 0.0]], dtype=np.float32)):

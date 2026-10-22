@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from index_store import IndexStore
-from models import encode_texts, image_file_label
+from models import TEXT_MODEL_NAME, encode_texts, image_file_label
 
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TEXT_CHARS = 4000
@@ -40,6 +40,7 @@ class Indexer:
         root = Path(directory).expanduser().resolve()
         if not root.is_dir():
             raise ValueError("Not a directory: %s" % directory)
+        self.store.assert_embedding_profile(TEXT_MODEL_NAME)
         skipped, errors, pending = 0, [], []
         meta = self.store.meta_map()
         scanned = 0
@@ -75,7 +76,7 @@ class Indexer:
         stale_paths = self._find_missing_paths(str(root), meta)
         self._report(progress_callback, "saving", len(rows), len(rows))
         if rows:
-            self.store.upsert_many(rows)
+            self.store.upsert_many(rows, embedding_model=TEXT_MODEL_NAME)
         removed = self.store.delete_many(stale_paths)
         if (rows or removed) and self.on_change is not None:
             self.on_change()

@@ -23,6 +23,7 @@ function App() {
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
   const [indexJob, setIndexJob] = useState(null);
+  const [catalogNeedsReset, setCatalogNeedsReset] = useState(false);
 
   const pause = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -63,10 +64,30 @@ function App() {
         throw new Error(job.error || 'Index failed');
       }
     } catch (err) {
-      setError(apiDetail(err, 'Index failed'));
+      const message = apiDetail(err, 'Index failed');
+      setError(message);
+      setCatalogNeedsReset(err.response?.status === 409 && /embedding|index profile/i.test(message));
       setIndexJob(null);
     } finally {
       setBusy('');
+    }
+  };
+
+  const handleResetCatalog = async () => {
+    const confirmed = window.confirm(
+      'Clear every catalog entry and embedding? Files on disk will stay unchanged, but you will need to re-index each folder. The selected folder will be re-indexed now.'
+    );
+    if (!confirmed) return;
+    try {
+      await post('/index/reset', {});
+      setResults([]);
+      setExplanations({});
+      setCatalogNeedsReset(false);
+      setError(null);
+      setStatusMsg('Catalog cleared. Re-indexing the selected folder; add other folders again afterward.');
+      if (directory) await handleIndex();
+    } catch (err) {
+      setError(apiDetail(err, 'Could not clear the catalog'));
     }
   };
 
@@ -92,7 +113,9 @@ function App() {
       setResults(hits);
       setStatusMsg(hits.length ? `Found ${data.count} result(s).` : 'No matches. Index a directory first, or try a different query.');
     } catch (err) {
-      setError(apiDetail(err, 'Search failed'));
+      const message = apiDetail(err, 'Search failed');
+      setError(message);
+      setCatalogNeedsReset(err.response?.status === 409 && /embedding|index profile/i.test(message));
     } finally {
       setBusy('');
     }
@@ -199,6 +222,12 @@ function App() {
         </div>
 
         {error && <div className="banner error">{error}</div>}
+        {catalogNeedsReset && (
+          <div className="banner status warn">
+            <p>The stored vectors cannot be compared safely with the active embedding model.</p>
+            <button type="button" className="btn" onClick={handleResetCatalog}>Clear catalog and re-index selected folder</button>
+          </div>
+        )}
         {statusMsg && <div className="banner status">{statusMsg}</div>}
         {indexErrors > 0 && (
           <div className="banner status warn">{indexErrors} file(s) had errors during index (first few logged server-side).</div>

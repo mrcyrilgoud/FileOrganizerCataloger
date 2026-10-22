@@ -26,6 +26,7 @@ EXPECTED_ROUTES = {
     ("POST", "/index"),
     ("GET", "/jobs/{job_id}"),
     ("POST", "/jobs/{job_id}/cancel"),
+    ("POST", "/index/reset"),
     ("POST", "/search"),
     ("POST", "/explain"),
     ("POST", "/browse"),
@@ -81,6 +82,7 @@ class SurfaceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             started = threading.Event()
+            db = IndexStore(db_path=Path(tmp) / "index.db")
 
             def wait_for_cancel(directory, progress_callback, cancel_event):
                 progress_callback({"stage": "scanning", "completed": 1, "total": None})
@@ -90,7 +92,7 @@ class SurfaceTests(unittest.TestCase):
                 from indexer import IndexCancelled
                 raise IndexCancelled("cancelled")
 
-            with patch("main.indexer.index_directory", side_effect=wait_for_cancel):
+            with patch("main.indexer.store", db), patch("main.indexer.index_directory", side_effect=wait_for_cancel):
                 client = TestClient(app)
                 response = client.post("/index", json={"directory": tmp})
                 self.assertEqual(response.status_code, 202)
@@ -142,6 +144,55 @@ class SurfaceTests(unittest.TestCase):
                 response = client.post("/search", json={"query": "passport", "limit": 5})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json()["results"][0]["path"], str(sample.resolve()))
+
+    def test_legacy_embedding_index_requires_explicit_clear_before_rebuild(self):
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = root / "corpus"
+            corpus.mkdir()
+            sample = corpus / "note.txt"
+            sample.write_text("legacy migration test", encoding="utf-8")
+            db = IndexStore(db_path=root / "index.db")
+            legacy_path = str((root / "legacy.txt").resolve())
+            db.upsert_many([{
+                "path": legacy_path, "mtime": 1.0, "size": 6, "mime": "text/plain",
+                "text_excerpt": "legacy", "embedding": np.asarray([1.0, 0.0], dtype=np.float32).tobytes(),
+                "embedding_dim": 2, "last_indexed": 1.0,
+            }])
+
+            def encode(texts, **_kwargs):
+                return np.tile([1.0, 0.0], (len(texts), 1))
+
+            with patch("main.indexer.store", db), patch("main.searcher.store", db), patch("search.encode_texts", side_effect=encode), patch("indexer.encode_texts", side_effect=encode):
+                client = TestClient(app)
+                conflict = client.post("/index", json={"directory": str(corpus)})
+                self.assertEqual(conflict.status_code, 409)
+                self.assertIn("legacy embeddings", conflict.json()["detail"])
+                self.assertEqual(client.post("/search", json={"query": "legacy"}).status_code, 409)
+
+                reset = client.post("/index/reset")
+                self.assertEqual(reset.status_code, 200)
+                self.assertEqual(reset.json()["removed"], 1)
+                self.assertFalse(reset.json()["files_deleted_from_disk"])
+                self.assertIsNotNone(sample.stat())
+
+                started = client.post("/index", json={"directory": str(corpus)})
+                self.assertEqual(started.status_code, 202)
+                job_id = started.json()["job_id"]
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    state = client.get(f"/jobs/{job_id}").json()
+                    if state["status"] in {"completed", "failed", "cancelled"}:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(state["status"], "completed", state)
+                self.assertEqual(db.embedding_profile(), {
+                    "embedding_model": "all-MiniLM-L6-v2", "embedding_dimension": "2",
+                })
 
     def test_open_missing_is_404(self):
         from fastapi.testclient import TestClient

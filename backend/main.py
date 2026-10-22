@@ -17,7 +17,9 @@ from pydantic import BaseModel, Field
 
 from actions import trash_path
 from explain import ExplainError, FileExplainer
+from index_store import EmbeddingCompatibilityError
 from indexer import IndexCancelled, Indexer
+from models import TEXT_MODEL_NAME
 from search import SemanticSearch
 
 app = FastAPI(title="Sonic Telescope API", description="Local semantic file library (Phase 1).")
@@ -99,6 +101,14 @@ class IndexJobManager:
             job["status"] = "cancelling"
             return self._public(job), "accepted"
 
+    def clear_catalog(self):
+        with self._lock:
+            if any(job["status"] in {"queued", "running", "cancelling"} for job in self._jobs.values()):
+                raise RuntimeError("Cannot clear the catalog while indexing is active")
+            removed = indexer.store.clear_all()
+            searcher.invalidate()
+            return removed
+
     @staticmethod
     def _public(job):
         return {key: value for key, value in job.items() if key != "cancel_event"}
@@ -149,9 +159,21 @@ def index_directory(req: DirectoryRequest, response: Response):
     if not os.path.isdir(req.directory):
         _http(400, "Invalid directory path")
     try:
+        indexer.store.assert_embedding_profile(TEXT_MODEL_NAME)
         job = index_jobs.start(req.directory)
         response.headers["Location"] = "/jobs/%s" % job["job_id"]
         return job
+    except RuntimeError as exc:
+        _http(409, str(exc), exc)
+    except EmbeddingCompatibilityError as exc:
+        _http(409, str(exc), exc)
+
+
+@app.post("/index/reset")
+def reset_index():
+    try:
+        removed = index_jobs.clear_catalog()
+        return {"status": "cleared", "removed": removed, "files_deleted_from_disk": False}
     except RuntimeError as exc:
         _http(409, str(exc), exc)
 
@@ -181,6 +203,8 @@ def semantic_search(req: SearchRequest):
     try:
         hits = searcher.search(req.query, limit=req.limit or 20)
         return {"query": req.query, "count": len(hits), "results": hits}
+    except EmbeddingCompatibilityError as exc:
+        _http(409, str(exc), exc)
     except Exception as exc:  # noqa: BLE001
         _http(500, "Search failed: %s" % exc, exc)
 
