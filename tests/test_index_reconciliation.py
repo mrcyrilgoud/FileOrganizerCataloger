@@ -85,7 +85,66 @@ class IndexReconciliationTests(unittest.TestCase):
                 result = indexer.index_directory(str(root))
 
             self.assertEqual(result["removed"], 0)
+            self.assertEqual(result["error_count"], 1)
             self.assertIsNotNone(store.get(existing_path))
+
+    def test_removes_rows_for_files_that_become_ineligible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            sample = root / "note.txt"
+            sample.write_text("searchable notes", encoding="utf-8")
+            store = IndexStore(db_path=base / "index.db")
+            searcher = SemanticSearch(store=store)
+            indexer = Indexer(store=store, on_change=searcher.invalidate)
+            with patch("indexer.encode_texts", side_effect=self._encode):
+                indexer.index_directory(str(root))
+                with patch("search.encode_texts", side_effect=self._encode):
+                    self.assertEqual(len(searcher.search("searchable notes", limit=5)), 1)
+                sample.write_text("   \n", encoding="utf-8")
+                result = indexer.index_directory(str(root))
+
+            self.assertEqual(result["removed"], 1)
+            self.assertIsNone(store.get(str(sample.resolve())))
+            with patch("search.encode_texts", side_effect=self._encode):
+                self.assertEqual(searcher.search("searchable notes", limit=5), [])
+
+            sample.write_text("searchable again", encoding="utf-8")
+            with patch("indexer.encode_texts", side_effect=self._encode):
+                indexer.index_directory(str(root))
+            sample.write_text("", encoding="utf-8")
+            result = indexer.index_directory(str(root))
+            self.assertEqual(result["removed"], 1)
+            self.assertIsNone(store.get(str(sample.resolve())))
+
+            sample.write_text("searchable again", encoding="utf-8")
+            with patch("indexer.encode_texts", side_effect=self._encode):
+                indexer.index_directory(str(root))
+            sample.unlink()
+            sample.mkdir()
+            result = indexer.index_directory(str(root))
+            self.assertEqual(result["removed"], 1)
+            self.assertIsNone(store.get(str(sample.resolve())))
+
+    def test_reports_directory_traversal_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "root"
+            root.mkdir()
+            store = IndexStore(db_path=Path(tmp) / "index.db")
+            indexer = Indexer(store=store)
+            original_walk = os.walk
+
+            def walk_with_error(top, onerror=None):
+                if onerror is not None:
+                    onerror(PermissionError(13, "Permission denied", str(root / "private")))
+                yield from original_walk(top)
+
+            with patch("indexer.os.walk", side_effect=walk_with_error):
+                result = indexer.index_directory(str(root))
+
+            self.assertEqual(result["error_count"], 1)
+            self.assertIn(str(root / "private"), result["errors"][0])
 
 
 if __name__ == "__main__":

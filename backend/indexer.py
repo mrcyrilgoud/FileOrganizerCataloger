@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+import stat as stat_module
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -41,11 +42,15 @@ class Indexer:
         if not root.is_dir():
             raise ValueError("Not a directory: %s" % directory)
         self.store.assert_embedding_profile(TEXT_MODEL_NAME)
-        skipped, errors, pending = 0, [], []
+        skipped, errors, pending, confirmed_unindexable = 0, [], [], []
         meta = self.store.meta_map()
         scanned = 0
         self._report(progress_callback, "scanning", scanned, None)
-        for dirpath, dirnames, filenames in os.walk(str(root)):
+
+        def on_walk_error(exc):
+            errors.append("%s: %s" % (exc.filename or root, exc))
+
+        for dirpath, dirnames, filenames in os.walk(str(root), onerror=on_walk_error):
             dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in SKIP_DIR_NAMES]
             for name in filenames:
                 self._check_cancelled(cancel_event)
@@ -62,18 +67,24 @@ class Indexer:
                     continue
                 if item is None:
                     skipped += 1
+                elif item.get("confirmed_unindexable"):
+                    confirmed_unindexable.append(item["path"])
+                    skipped += 1
                 else:
                     pending.append(item)
                 if scanned % 16 == 0:
                     self._report(progress_callback, "scanning", scanned, None)
         self._report(progress_callback, "embedding", 0, len(pending))
-        rows, extra_skipped, extra_errors = self._embed_pending(
+        rows, extra_skipped, extra_errors, empty_paths = self._embed_pending(
             pending, progress_callback=progress_callback, cancel_event=cancel_event
         )
         skipped += extra_skipped
         errors.extend(extra_errors)
+        confirmed_unindexable.extend(empty_paths)
         self._check_cancelled(cancel_event)
-        stale_paths = self._find_missing_paths(str(root), meta)
+        stale_paths = list(dict.fromkeys(
+            self._find_missing_paths(str(root), meta) + confirmed_unindexable
+        ))
         self._report(progress_callback, "saving", len(rows), len(rows))
         if rows:
             self.store.upsert_many(rows, embedding_model=TEXT_MODEL_NAME)
@@ -113,7 +124,9 @@ class Indexer:
             except ValueError:
                 continue
             try:
-                os.stat(indexed_path)
+                indexed_stat = os.stat(indexed_path)
+                if not stat_module.S_ISREG(indexed_stat.st_mode):
+                    missing.append(indexed_path)
             except (FileNotFoundError, NotADirectoryError):
                 missing.append(indexed_path)
             except OSError:
@@ -122,14 +135,11 @@ class Indexer:
         return missing
 
     def _collect_pending(self, path: Path, meta: Dict[str, Tuple[float, int]]):
-        try:
-            stat = path.stat()
-        except OSError:
-            return None
-        if not path.is_file() or stat.st_size == 0 or stat.st_size > MAX_FILE_BYTES:
-            return None
+        stat = path.stat()
         abs_path = str(path.resolve())
         existing = meta.get(abs_path)
+        if not stat_module.S_ISREG(stat.st_mode) or stat.st_size == 0 or stat.st_size > MAX_FILE_BYTES:
+            return {"path": abs_path, "confirmed_unindexable": True} if existing else None
         if existing and abs(existing[0] - stat.st_mtime) < 0.001 and existing[1] == stat.st_size:
             return None
         mime, _ = mimetypes.guess_type(abs_path)
@@ -144,12 +154,13 @@ class Indexer:
         return {
             "path": abs_path, "src": path, "mtime": stat.st_mtime,
             "size": stat.st_size, "mime": mime, "kind": kind,
+            "remove_existing": existing is not None,
         }
 
     def _embed_pending(self, pending: List[Dict[str, Any]], progress_callback=None, cancel_event=None):
         if not pending:
-            return [], 0, []
-        skipped, errors, text_items, label_items = 0, [], [], []
+            return [], 0, [], []
+        skipped, errors, text_items, label_items, empty_paths = 0, [], [], [], []
         for item in pending:
             self._check_cancelled(cancel_event)
             try:
@@ -158,6 +169,8 @@ class Indexer:
                         text = handle.read(MAX_TEXT_CHARS)
                     if not text.strip():
                         skipped += 1
+                        if item["remove_existing"]:
+                            empty_paths.append(item["path"])
                         continue
                     text_items.append((item, text))
                 elif item["kind"] == "image":
@@ -174,7 +187,7 @@ class Indexer:
             batch = items[start : start + 32]
             rows.extend(self._rows_from_batch(batch, time.time()))
             self._report(progress_callback, "embedding", min(start + len(batch), len(items)), len(items))
-        return rows, skipped, errors
+        return rows, skipped, errors, empty_paths
 
     def _rows_from_batch(self, items, now):
         if not items:
