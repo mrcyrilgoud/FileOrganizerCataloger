@@ -22,6 +22,9 @@ function App() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState(null);
   const [statusMsg, setStatusMsg] = useState(null);
+  const [indexJob, setIndexJob] = useState(null);
+
+  const pause = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
   const handleBrowse = async () => {
     try {
@@ -39,13 +42,41 @@ function App() {
     setStatusMsg(null);
     setIndexErrors(0);
     try {
-      const { data } = await post('/index', { directory });
-      setIndexErrors(data.error_count || 0);
-      setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, removed ${data.removed || 0} stale, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
+      const { data: started } = await post('/index', { directory });
+      setIndexJob(started);
+      let job = started;
+      while (job.status === 'queued' || job.status === 'running' || job.status === 'cancelling') {
+        await pause(400);
+        const { data } = await axios.get(`${API_URL}/jobs/${started.job_id}`);
+        job = data;
+        setIndexJob(data);
+      }
+      if (job.status === 'completed') {
+        const data = job.result;
+        setIndexErrors(data.error_count || 0);
+        setStatusMsg(`Indexed ${data.indexed} new, updated ${data.updated}, removed ${data.removed || 0} stale, skipped ${data.skipped}. Store total: ${data.total_in_store}.`);
+        setIndexJob(null);
+      } else if (job.status === 'cancelled') {
+        setStatusMsg('Indexing cancelled. No catalog changes were saved.');
+        setIndexJob(null);
+      } else {
+        throw new Error(job.error || 'Index failed');
+      }
     } catch (err) {
       setError(apiDetail(err, 'Index failed'));
+      setIndexJob(null);
     } finally {
       setBusy('');
+    }
+  };
+
+  const handleCancelIndex = async () => {
+    if (!indexJob?.job_id) return;
+    try {
+      const { data } = await post(`/jobs/${indexJob.job_id}/cancel`, {});
+      setIndexJob(data);
+    } catch (err) {
+      setError(apiDetail(err, 'Could not cancel indexing'));
     }
   };
 
@@ -135,9 +166,19 @@ function App() {
                 disabled={busy === 'index' || !directory}
                 className="btn primary-btn"
               >
-                {busy === 'index' ? 'Indexing…' : 'Index'}
+                {busy === 'index' ? `${indexJob?.stage === 'embedding' ? 'Embedding' : 'Indexing'}…` : 'Index'}
               </button>
+              {busy === 'index' && indexJob?.status !== 'cancelling' && indexJob?.stage !== 'saving' && (
+                <button type="button" onClick={handleCancelIndex} className="btn">Cancel</button>
+              )}
             </div>
+            {busy === 'index' && indexJob && (
+              <p className="job-progress" role="status">
+                {indexJob.stage === 'embedding' && indexJob.total != null
+                  ? `Embedding ${indexJob.completed} of ${indexJob.total} files`
+                  : indexJob.stage === 'saving' ? 'Saving catalog changes…' : 'Scanning files…'}
+              </p>
+            )}
           </section>
 
           <section className="panel glass">

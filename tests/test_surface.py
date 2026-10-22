@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -22,6 +24,8 @@ from search import SemanticSearch  # noqa: E402
 EXPECTED_ROUTES = {
     ("GET", "/health"),
     ("POST", "/index"),
+    ("GET", "/jobs/{job_id}"),
+    ("POST", "/jobs/{job_id}/cancel"),
     ("POST", "/search"),
     ("POST", "/explain"),
     ("POST", "/browse"),
@@ -70,6 +74,74 @@ class SurfaceTests(unittest.TestCase):
         client = TestClient(app)
         res = client.post("/index", json={"directory": "/definitely/not/a/real/path"})
         self.assertEqual(res.status_code, 400)
+
+    def test_index_job_progress_serialization_and_cancellation(self):
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            started = threading.Event()
+
+            def wait_for_cancel(directory, progress_callback, cancel_event):
+                progress_callback({"stage": "scanning", "completed": 1, "total": None})
+                started.set()
+                while not cancel_event.wait(0.01):
+                    pass
+                from indexer import IndexCancelled
+                raise IndexCancelled("cancelled")
+
+            with patch("main.indexer.index_directory", side_effect=wait_for_cancel):
+                client = TestClient(app)
+                response = client.post("/index", json={"directory": tmp})
+                self.assertEqual(response.status_code, 202)
+                job_id = response.json()["job_id"]
+                self.assertTrue(started.wait(1))
+                self.assertEqual(client.get(f"/jobs/{job_id}").status_code, 200)
+                self.assertEqual(client.post("/index", json={"directory": tmp}).status_code, 409)
+                cancelled = client.post(f"/jobs/{job_id}/cancel")
+                self.assertEqual(cancelled.status_code, 200)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    state = client.get(f"/jobs/{job_id}").json()
+                    if state["status"] == "cancelled":
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(state["status"], "cancelled")
+                self.assertEqual(client.post(f"/jobs/{job_id}/cancel").status_code, 409)
+                self.assertEqual(client.get("/jobs/unknown").status_code, 404)
+
+    def test_index_job_api_completes_and_searches_indexed_files(self):
+        from fastapi.testclient import TestClient
+        from unittest.mock import patch
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            corpus = root / "corpus"
+            corpus.mkdir()
+            sample = corpus / "passport.txt"
+            sample.write_text("passport renewal checklist", encoding="utf-8")
+            db = IndexStore(db_path=root / "index.db")
+
+            def encode(texts, **_kwargs):
+                return np.tile([1.0, 0.0], (len(texts), 1))
+
+            with patch("main.indexer.store", db), patch("main.searcher.store", db), patch("indexer.encode_texts", side_effect=encode), patch("search.encode_texts", side_effect=encode):
+                client = TestClient(app)
+                started = client.post("/index", json={"directory": str(corpus)})
+                self.assertEqual(started.status_code, 202)
+                job_id = started.json()["job_id"]
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    state = client.get(f"/jobs/{job_id}").json()
+                    if state["status"] in {"completed", "failed", "cancelled"}:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(state["status"], "completed", state)
+                self.assertEqual(state["result"]["indexed"], 1)
+                response = client.post("/search", json={"query": "passport", "limit": 5})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["results"][0]["path"], str(sample.resolve()))
 
     def test_open_missing_is_404(self):
         from fastapi.testclient import TestClient

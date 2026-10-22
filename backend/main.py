@@ -4,17 +4,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from actions import trash_path
 from explain import ExplainError, FileExplainer
-from indexer import Indexer
+from indexer import IndexCancelled, Indexer
 from search import SemanticSearch
 
 app = FastAPI(title="Sonic Telescope API", description="Local semantic file library (Phase 1).")
@@ -26,6 +29,82 @@ app.add_middleware(
 searcher = SemanticSearch()
 indexer = Indexer(store=searcher.store, on_change=searcher.invalidate)
 explainer = FileExplainer(store=searcher.store)
+_explain_lock = threading.Lock()
+
+
+class IndexJobManager:
+    """In-process job registry; one index writer runs at a time."""
+
+    def __init__(self):
+        self._jobs = {}
+        self._lock = threading.Lock()
+
+    def start(self, directory):
+        with self._lock:
+            for job in self._jobs.values():
+                if job["status"] in {"queued", "running", "cancelling"}:
+                    raise RuntimeError("An indexing job is already active")
+            job_id = uuid.uuid4().hex
+            job = {
+                "job_id": job_id, "directory": str(Path(directory).expanduser().resolve()),
+                "status": "queued", "stage": "queued", "completed": 0,
+                "total": None, "result": None, "error": None,
+                "created_at": time.time(), "cancel_event": threading.Event(),
+            }
+            self._jobs[job_id] = job
+            threading.Thread(target=self._run, args=(job_id,), daemon=True).start()
+            return self._public(job)
+
+    def _run(self, job_id):
+        with self._lock:
+            job = self._jobs[job_id]
+            job["status"] = "running"
+
+        def progress(update):
+            with self._lock:
+                current = self._jobs.get(job_id)
+                if current is not None:
+                    current.update(update)
+
+        try:
+            result = indexer.index_directory(
+                job["directory"], progress_callback=progress,
+                cancel_event=job["cancel_event"],
+            )
+        except IndexCancelled:
+            with self._lock:
+                job.update(status="cancelled", stage="cancelled")
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                job.update(status="failed", stage="failed", error=str(exc))
+        else:
+            with self._lock:
+                job.update(status="completed", stage="completed", result=result)
+
+    def get(self, job_id):
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return self._public(job) if job else None
+
+    def cancel(self, job_id):
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None, "missing"
+            if job["status"] not in {"queued", "running", "cancelling"}:
+                return self._public(job), "finished"
+            if job["stage"] == "saving":
+                return self._public(job), "saving"
+            job["cancel_event"].set()
+            job["status"] = "cancelling"
+            return self._public(job), "accepted"
+
+    @staticmethod
+    def _public(job):
+        return {key: value for key, value in job.items() if key != "cancel_event"}
+
+
+index_jobs = IndexJobManager()
 
 
 class DirectoryRequest(BaseModel):
@@ -65,16 +144,36 @@ def health_check():
     }
 
 
-@app.post("/index")
-def index_directory(req: DirectoryRequest):
+@app.post("/index", status_code=202)
+def index_directory(req: DirectoryRequest, response: Response):
     if not os.path.isdir(req.directory):
         _http(400, "Invalid directory path")
     try:
-        return indexer.index_directory(req.directory)
-    except ValueError as exc:
-        _http(400, str(exc), exc)
-    except Exception as exc:  # noqa: BLE001
-        _http(500, "Index failed: %s" % exc, exc)
+        job = index_jobs.start(req.directory)
+        response.headers["Location"] = "/jobs/%s" % job["job_id"]
+        return job
+    except RuntimeError as exc:
+        _http(409, str(exc), exc)
+
+
+@app.get("/jobs/{job_id}")
+def get_index_job(job_id: str):
+    job = index_jobs.get(job_id)
+    if job is None:
+        _http(404, "Index job not found")
+    return job
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_index_job(job_id: str):
+    job, outcome = index_jobs.cancel(job_id)
+    if outcome == "missing":
+        _http(404, "Index job not found")
+    if outcome == "finished":
+        _http(409, "Index job has already finished")
+    if outcome == "saving":
+        _http(409, "Index job is saving catalog changes and can no longer be cancelled")
+    return job
 
 
 @app.post("/search")
@@ -90,7 +189,8 @@ def semantic_search(req: SearchRequest):
 def explain_file(req: ExplainRequest):
     try:
         target = FileExplainer(store=indexer.store, model=req.model) if req.model else explainer
-        return target.explain(req.path)
+        with _explain_lock:
+            return target.explain(req.path)
     except ExplainError as exc:
         _http(503, str(exc), exc)
     except Exception as exc:  # noqa: BLE001

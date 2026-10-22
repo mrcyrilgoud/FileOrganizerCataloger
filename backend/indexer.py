@@ -36,15 +36,19 @@ class Indexer:
         self.store = store or IndexStore()
         self.on_change = on_change
 
-    def index_directory(self, directory: str) -> Dict[str, Any]:
+    def index_directory(self, directory: str, progress_callback=None, cancel_event=None) -> Dict[str, Any]:
         root = Path(directory).expanduser().resolve()
         if not root.is_dir():
             raise ValueError("Not a directory: %s" % directory)
         skipped, errors, pending = 0, [], []
         meta = self.store.meta_map()
+        scanned = 0
+        self._report(progress_callback, "scanning", scanned, None)
         for dirpath, dirnames, filenames in os.walk(str(root)):
             dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in SKIP_DIR_NAMES]
             for name in filenames:
+                self._check_cancelled(cancel_event)
+                scanned += 1
                 if name.startswith("."):
                     skipped += 1
                     continue
@@ -59,10 +63,17 @@ class Indexer:
                     skipped += 1
                 else:
                     pending.append(item)
-        rows, extra_skipped, extra_errors = self._embed_pending(pending)
+                if scanned % 16 == 0:
+                    self._report(progress_callback, "scanning", scanned, None)
+        self._report(progress_callback, "embedding", 0, len(pending))
+        rows, extra_skipped, extra_errors = self._embed_pending(
+            pending, progress_callback=progress_callback, cancel_event=cancel_event
+        )
         skipped += extra_skipped
         errors.extend(extra_errors)
+        self._check_cancelled(cancel_event)
         stale_paths = self._find_missing_paths(str(root), meta)
+        self._report(progress_callback, "saving", len(rows), len(rows))
         if rows:
             self.store.upsert_many(rows)
         removed = self.store.delete_many(stale_paths)
@@ -79,6 +90,16 @@ class Indexer:
             "error_count": len(errors),
             "total_in_store": self.store.count(),
         }
+
+    @staticmethod
+    def _report(callback, stage, completed, total):
+        if callback is not None:
+            callback({"stage": stage, "completed": completed, "total": total})
+
+    @staticmethod
+    def _check_cancelled(cancel_event):
+        if cancel_event is not None and cancel_event.is_set():
+            raise IndexCancelled("Indexing cancelled before catalog changes were saved")
 
     @staticmethod
     def _find_missing_paths(root: str, meta: Dict[str, Tuple[float, int]]) -> List[str]:
@@ -124,11 +145,12 @@ class Indexer:
             "size": stat.st_size, "mime": mime, "kind": kind,
         }
 
-    def _embed_pending(self, pending: List[Dict[str, Any]]):
+    def _embed_pending(self, pending: List[Dict[str, Any]], progress_callback=None, cancel_event=None):
         if not pending:
             return [], 0, []
         skipped, errors, text_items, label_items = 0, [], [], []
         for item in pending:
+            self._check_cancelled(cancel_event)
             try:
                 if item["kind"] == "text":
                     with open(str(item["src"]), "r", encoding="utf-8", errors="ignore") as handle:
@@ -144,8 +166,14 @@ class Indexer:
             except Exception as exc:  # noqa: BLE001
                 errors.append("%s: %s" % (item["path"], exc))
                 skipped += 1
-        now = time.time()
-        return self._rows_from_batch(text_items + label_items, now), skipped, errors
+        items = text_items + label_items
+        rows = []
+        for start in range(0, len(items), 32):
+            self._check_cancelled(cancel_event)
+            batch = items[start : start + 32]
+            rows.extend(self._rows_from_batch(batch, time.time()))
+            self._report(progress_callback, "embedding", min(start + len(batch), len(items)), len(items))
+        return rows, skipped, errors
 
     def _rows_from_batch(self, items, now):
         if not items:
@@ -161,3 +189,7 @@ class Indexer:
                 "last_indexed": now,
             })
         return rows
+
+
+class IndexCancelled(Exception):
+    """Raised when an indexing job is cancelled at a safe checkpoint."""
